@@ -115,10 +115,35 @@ fn file_sha256(path: &Path) -> Result<String> {
     Ok(hex::encode(hash))
 }
 
+/// Every double-quoted span on a line, in order.
+fn quoted_strings(line: &str) -> Vec<String> {
+    line.split('"')
+        .enumerate()
+        .filter(|(i, _)| i % 2 == 1)
+        .map(|(_, s)| s.to_string())
+        .collect()
+}
+
+/// Net `[` minus `]`, ignoring brackets inside quoted filenames.
+fn bracket_delta(line: &str) -> i32 {
+    let mut delta = 0;
+    let mut in_quote = false;
+    for c in line.chars() {
+        match c {
+            '"' => in_quote = !in_quote,
+            '[' if !in_quote => delta += 1,
+            ']' if !in_quote => delta -= 1,
+            _ => {}
+        }
+    }
+    delta
+}
+
 fn parse_sync_config(text: &str) -> Vec<Mirror> {
     let mut mirrors = Vec::new();
     let mut cur: Option<Mirror> = None;
     let mut in_files = false;
+    let mut depth = 0i32;
 
     for raw in text.lines() {
         let line = raw.split('#').next().unwrap_or("").trim();
@@ -136,7 +161,10 @@ fn parse_sync_config(text: &str) -> Vec<Mirror> {
             continue;
         }
         let Some(m) = cur.as_mut() else { continue };
-        if line.starts_with('[') {
+        // Only outside a `files` array does a leading `[` mean a new table —
+        // inside one it is an ["from", "to"] element, and treating those as
+        // headers ended the mirror on its first entry.
+        if !in_files && line.starts_with('[') {
             let done = cur.take().unwrap();
             if !done.source_root.is_empty() && !done.target_root.is_empty() {
                 mirrors.push(done);
@@ -144,30 +172,33 @@ fn parse_sync_config(text: &str) -> Vec<Mirror> {
             in_files = false;
             continue;
         }
-        if let Some((k, v)) = line.split_once('=') {
-            let k = k.trim();
-            let v = v.trim().trim_matches('"');
-            if !in_files {
+        if !in_files {
+            if let Some((k, v)) = line.split_once('=') {
+                let k = k.trim();
+                let v = v.trim().trim_matches('"');
                 match k {
                     "name" => m.name = v.to_string(),
                     "source_root" => m.source_root = expand_user(v).display().to_string(),
                     "target_root" => m.target_root = expand_user(v).display().to_string(),
-                    "files" => in_files = true,
+                    "files" => {
+                        in_files = true;
+                        depth = 0;
+                    }
                     _ => {}
                 }
             }
         }
         if in_files {
-            // ["a", "b"]
-            let parts: Vec<&str> = line
-                .split('"')
-                .enumerate()
-                .filter_map(|(i, s)| if i % 2 == 1 { Some(s) } else { None })
-                .collect();
-            if parts.len() >= 2 {
-                m.files.push((parts[0].to_string(), parts[1].to_string()));
+            // Every ["from", "to"] pair on this line, however many.
+            let quoted = quoted_strings(line);
+            for pair in quoted.chunks_exact(2) {
+                m.files.push((pair[0].clone(), pair[1].clone()));
             }
-            if line == "]" {
+            // Track nesting instead of matching a bare `]`, so a single-line
+            // `files = [["a", "b"]]` closes the array like the multi-line form.
+            // Leaving it open would swallow every later key in the mirror.
+            depth += bracket_delta(line);
+            if depth <= 0 {
                 in_files = false;
             }
         }
@@ -178,4 +209,140 @@ fn parse_sync_config(text: &str) -> Vec<Mirror> {
         }
     }
     mirrors
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MULTILINE: &str = r#"
+[[sync.mirrors]]
+name = "split"
+source_root = "../main"
+target_root = "../split"
+files = [
+  ["src/lib.rs", "src/lib.rs"],
+  ["src/api.rs", "src/api.rs"],
+]
+"#;
+
+    #[test]
+    fn parses_the_documented_multiline_form() {
+        let mirrors = parse_sync_config(MULTILINE);
+        assert_eq!(mirrors.len(), 1);
+        assert_eq!(mirrors[0].name, "split");
+        assert_eq!(mirrors[0].files.len(), 2);
+        assert_eq!(
+            mirrors[0].files[1],
+            ("src/api.rs".to_string(), "src/api.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn a_single_line_files_array_closes() {
+        // The array used to stay open forever, swallowing every later key.
+        let mirrors = parse_sync_config(
+            r#"
+[[sync.mirrors]]
+files = [["a.rs", "b.rs"]]
+name = "named-after-files"
+source_root = "../main"
+target_root = "../split"
+"#,
+        );
+        assert_eq!(mirrors.len(), 1, "mirror was dropped: {mirrors:?}");
+        assert_eq!(mirrors[0].name, "named-after-files");
+        assert_eq!(mirrors[0].source_root, "../main");
+        assert_eq!(
+            mirrors[0].files,
+            vec![("a.rs".to_string(), "b.rs".to_string())]
+        );
+    }
+
+    #[test]
+    fn several_pairs_on_one_line_are_all_kept() {
+        let mirrors = parse_sync_config(
+            r#"
+[[sync.mirrors]]
+source_root = "../main"
+target_root = "../split"
+files = [["a", "b"], ["c", "d"]]
+"#,
+        );
+        assert_eq!(mirrors[0].files.len(), 2, "{:?}", mirrors[0].files);
+        assert_eq!(mirrors[0].files[1], ("c".to_string(), "d".to_string()));
+    }
+
+    #[test]
+    fn several_mirrors_are_separated() {
+        let mut text = MULTILINE.to_string();
+        text.push_str(
+            r#"
+[[sync.mirrors]]
+name = "second"
+source_root = "../a"
+target_root = "../b"
+files = [["x", "y"]]
+"#,
+        );
+        let mirrors = parse_sync_config(&text);
+        assert_eq!(mirrors.len(), 2);
+        assert_eq!(mirrors[1].name, "second");
+        assert_eq!(mirrors[1].files.len(), 1);
+    }
+
+    #[test]
+    fn mirrors_without_both_roots_are_dropped() {
+        let mirrors = parse_sync_config("[[sync.mirrors]]\nname = \"incomplete\"\n");
+        assert!(mirrors.is_empty(), "{mirrors:?}");
+    }
+
+    #[test]
+    fn an_unrelated_table_ends_the_mirror() {
+        let mirrors = parse_sync_config(
+            r#"
+[[sync.mirrors]]
+source_root = "../main"
+target_root = "../split"
+files = [["a", "b"]]
+
+[cache]
+share_target_dir = false
+"#,
+        );
+        assert_eq!(mirrors.len(), 1);
+        assert_eq!(mirrors[0].files.len(), 1, "{:?}", mirrors[0].files);
+    }
+
+    #[test]
+    fn brackets_inside_filenames_do_not_unbalance_the_array() {
+        let mirrors = parse_sync_config(
+            r#"
+[[sync.mirrors]]
+source_root = "../main"
+target_root = "../split"
+files = [
+  ["src/a[1].rs", "src/a[1].rs"],
+]
+name = "after"
+"#,
+        );
+        assert_eq!(mirrors[0].files.len(), 1);
+        assert_eq!(mirrors[0].name, "after", "array closed too early or late");
+    }
+
+    #[test]
+    fn comments_are_ignored() {
+        let mirrors = parse_sync_config(
+            r#"
+# leading comment
+[[sync.mirrors]]
+source_root = "../main"   # trailing
+target_root = "../split"
+files = [["a", "b"]]
+"#,
+        );
+        assert_eq!(mirrors.len(), 1);
+        assert_eq!(mirrors[0].source_root, "../main");
+    }
 }
