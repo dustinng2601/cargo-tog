@@ -2,10 +2,10 @@ use std::path::Path;
 
 use anyhow::{bail, Result};
 
-use crate::cargo_toml::{
+use cargo_tog::cargo_toml::{
     find_cargo_tomls, load_manifest, resolve_package_version, ParsedManifest,
 };
-use crate::paths::resolve_path;
+use cargo_tog::paths::resolve_path;
 
 pub fn run(root: &str) -> Result<()> {
     let root = resolve_path(root);

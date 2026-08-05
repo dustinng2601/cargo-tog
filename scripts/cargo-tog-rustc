@@ -1,35 +1,28 @@
 #!/usr/bin/env bash
-# cargo-tog-rustc — public RUSTC_WRAPPER name for cargo-tog.
-# Maps CARGO_TOG_* env into the compiler-cache engine, then execs it.
+# Compatibility launcher: prefer the Rust binary, else map env and call engine.
 set -euo pipefail
+DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$DIR/.." && pwd)"
 
-# Local disk location (our name)
-if [ -n "${CARGO_TOG_CACHE_DIR:-}" ]; then
-  export SCCACHE_DIR="${CARGO_TOG_CACHE_DIR}"
-fi
+for cand in \
+  "cargo-tog-rustc" \
+  "$ROOT/target/release/cargo-tog-rustc" \
+  "$ROOT/target/debug/cargo-tog-rustc"
+do
+  if command -v "$cand" >/dev/null 2>&1 || [[ -x "$cand" ]]; then
+    if [[ -x "$cand" ]]; then exec "$cand" "$@"; fi
+    exec "$cand" "$@"
+  fi
+done
 
-# Remote object store (our names → engine env)
-if [ -n "${CARGO_TOG_BUCKET:-}" ]; then
-  export SCCACHE_BUCKET="${CARGO_TOG_BUCKET}"
-fi
-if [ -n "${CARGO_TOG_ENDPOINT:-}" ]; then
-  export SCCACHE_ENDPOINT="${CARGO_TOG_ENDPOINT}"
-fi
-if [ -n "${CARGO_TOG_REGION:-}" ]; then
-  export SCCACHE_REGION="${CARGO_TOG_REGION}"
-elif [ -n "${CARGO_TOG_BUCKET:-}" ] && [ -z "${SCCACHE_REGION:-}" ]; then
-  export SCCACHE_REGION=auto
-fi
-if [ -n "${CARGO_TOG_ACCESS_KEY_ID:-}" ]; then
-  export AWS_ACCESS_KEY_ID="${CARGO_TOG_ACCESS_KEY_ID}"
-fi
-if [ -n "${CARGO_TOG_SECRET_ACCESS_KEY:-}" ]; then
-  export AWS_SECRET_ACCESS_KEY="${CARGO_TOG_SECRET_ACCESS_KEY}"
-fi
+# Last resort: inline env map + engine (Unix only)
+if [[ -n "${CARGO_TOG_CACHE_DIR:-}" ]]; then export SCCACHE_DIR="$CARGO_TOG_CACHE_DIR"; fi
+if [[ -n "${CARGO_TOG_BUCKET:-}" ]]; then export SCCACHE_BUCKET="$CARGO_TOG_BUCKET"; fi
+if [[ -n "${CARGO_TOG_ENDPOINT:-}" ]]; then export SCCACHE_ENDPOINT="$CARGO_TOG_ENDPOINT"; fi
+if [[ -n "${CARGO_TOG_REGION:-}" ]]; then export SCCACHE_REGION="$CARGO_TOG_REGION"
+elif [[ -n "${CARGO_TOG_BUCKET:-}" ]]; then export SCCACHE_REGION=auto; fi
+if [[ -n "${CARGO_TOG_ACCESS_KEY_ID:-}" ]]; then export AWS_ACCESS_KEY_ID="$CARGO_TOG_ACCESS_KEY_ID"; fi
+if [[ -n "${CARGO_TOG_SECRET_ACCESS_KEY:-}" ]]; then export AWS_SECRET_ACCESS_KEY="$CARGO_TOG_SECRET_ACCESS_KEY"; fi
 
-if command -v sccache >/dev/null 2>&1; then
-  exec sccache "$@"
-fi
-
-# Fallback: no engine installed — compile without cache rather than hard-fail.
+if command -v sccache >/dev/null 2>&1; then exec sccache "$@"; fi
 exec "${RUSTC:-rustc}" "$@"

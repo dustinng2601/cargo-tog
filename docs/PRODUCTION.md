@@ -1,5 +1,7 @@
 # Production / enterprise runbook
 
+Cross-OS architecture: [CROSS_OS.md](CROSS_OS.md).
+
 ## Readiness checklist
 
 ### Phase 0 — Single repo, GitHub-hosted (day one)
@@ -11,14 +13,17 @@
 - [ ] `cargo test` / `cargo nextest` both work unchanged
 - [ ] No remote secrets required
 
-### Phase 1 — Multi-repo / multi-job object reuse
+### Phase 1 — Multi-repo / multi-OS object reuse
 
 - [ ] S3-compatible bucket (R2/S3/MinIO) in the **same region** as CI runners
 - [ ] Org secrets: `CARGO_TOG_BUCKET`, `CARGO_TOG_ENDPOINT`, `CARGO_TOG_REGION`,
       `CARGO_TOG_ACCESS_KEY_ID`, `CARGO_TOG_SECRET_ACCESS_KEY`
 - [ ] IAM: least privilege object R/W on that bucket only
 - [ ] All Rust repos inherit the same org secrets
-- [ ] Confirm hit rate after 2–3 warm builds (`cargo-tog doctor` / engine stats)
+- [ ] CI matrix covers ubuntu + macos + windows with keys:
+      `test-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}`
+- [ ] Confirm hit rate after 2–3 warm builds **per OS** (`cargo-tog doctor`)
+- [ ] Expect **no** object sharing across linux/darwin/windows triples (by design)
 
 ### Phase 2 — Hardening
 

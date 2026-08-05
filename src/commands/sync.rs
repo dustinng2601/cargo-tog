@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 
-use crate::paths::{expand_user, resolve_relative_to};
+use cargo_tog::paths::{expand_user, resolve_relative_to};
 
 #[derive(Debug, Default)]
 struct Mirror {

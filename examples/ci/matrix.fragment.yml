@@ -1,0 +1,31 @@
+# Full cross-OS matrix fragment for consumer repos.
+
+strategy:
+  fail-fast: false
+  matrix:
+    include:
+      - os: ubuntu-22.04
+        target: x86_64-unknown-linux-gnu
+      - os: macos-14
+        target: aarch64-apple-darwin
+      - os: windows-2022
+        target: x86_64-pc-windows-msvc
+
+env:
+  CARGO_TOG_BUCKET: ${{ secrets.CARGO_TOG_BUCKET }}
+  CARGO_TOG_ENDPOINT: ${{ secrets.CARGO_TOG_ENDPOINT }}
+  CARGO_TOG_REGION: ${{ secrets.CARGO_TOG_REGION }}
+  CARGO_TOG_ACCESS_KEY_ID: ${{ secrets.CARGO_TOG_ACCESS_KEY_ID }}
+  CARGO_TOG_SECRET_ACCESS_KEY: ${{ secrets.CARGO_TOG_SECRET_ACCESS_KEY }}
+
+# jobs.test:
+#   runs-on: ${{ matrix.os }}
+#   steps:
+#     - uses: actions/checkout@v4
+#     - uses: dtolnay/rust-toolchain@stable
+#       with: { targets: ${{ matrix.target }} }
+#     - uses: your-org/cargo-tog/action@main
+#       with:
+#         key: test-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}
+#         install-nextest: "true"
+#     - run: cargo nextest run --workspace

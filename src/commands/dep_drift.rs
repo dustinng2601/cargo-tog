@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 
-use crate::cargo_toml::collect_explicit_deps;
-use crate::paths::resolve_path;
+use cargo_tog::cargo_toml::collect_explicit_deps;
+use cargo_tog::paths::resolve_path;
 
 pub fn run(master: &str, other: &str) -> Result<()> {
     let master = resolve_path(master);

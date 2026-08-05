@@ -1,8 +1,8 @@
 name: cargo-tog
 description: >
-  Production Cargo CI cache setup — compiler object cache + registry/git cache
-  without uploading target/. Optional nextest install. Configure with CARGO_TOG_*
-  secrets for multi-repo remote objects.
+  Production Cargo CI cache (macOS/Linux/Windows) — compiler objects + registry,
+  no target/ upload. CARGO_TOG_* secrets for multi-repo remote objects.
+  Sets RUSTC_WRAPPER to a native cargo-tog-rustc binary.
 
 branding:
   icon: zap
@@ -10,11 +10,11 @@ branding:
 
 inputs:
   key:
-    description: Registry cache key (include runner.os, arch, target, profile)
+    description: Registry cache key — include runner.os, arch, and target triple
     required: false
     default: ""
   shared-key:
-    description: Optional registry cache key suffix (e.g. job name)
+    description: Optional registry cache key suffix
     required: false
     default: ""
   workspaces:
@@ -30,19 +30,25 @@ inputs:
     required: false
     default: "true"
   cache-targets:
-    description: Upload target/ to GitHub cache (keep false in production)
+    description: Upload target/ (keep false in production)
     required: false
     default: "false"
   install-nextest:
-    description: Install cargo-nextest (shares compiler cache with cargo test)
+    description: Install cargo-nextest (same compiler cache)
     required: false
     default: "false"
   incremental:
-    description: Value for CARGO_INCREMENTAL (0 recommended in CI)
+    description: CARGO_INCREMENTAL value (0 recommended in CI)
     required: false
     default: "0"
   show-stats:
-    description: Print compiler-cache stats at end of job setup
+    description: Print compiler-cache engine stats
+    required: false
+    default: "true"
+  install-wrapper:
+    description: >
+      Build/install native cargo-tog-rustc from this action repo (needs cargo on PATH).
+      Set false only if cargo-tog-rustc is already on PATH.
     required: false
     default: "true"
 
@@ -57,30 +63,33 @@ runs:
         echo "CARGO_PROFILE_DEV_DEBUG=0" >> "$GITHUB_ENV"
         echo "CARGO_INCREMENTAL=${{ inputs.incremental }}" >> "$GITHUB_ENV"
 
-        # Public configuration surface: CARGO_TOG_* only.
         bucket="${CARGO_TOG_BUCKET:-}"
         endpoint="${CARGO_TOG_ENDPOINT:-}"
         region="${CARGO_TOG_REGION:-}"
         key_id="${CARGO_TOG_ACCESS_KEY_ID:-}"
         secret="${CARGO_TOG_SECRET_ACCESS_KEY:-}"
 
-        # Implementation bridge (engine env). Not part of the public contract.
-        if [ -n "$bucket" ]; then
-          echo "SCCACHE_BUCKET=$bucket" >> "$GITHUB_ENV"
-        fi
-        if [ -n "$endpoint" ]; then
-          echo "SCCACHE_ENDPOINT=$endpoint" >> "$GITHUB_ENV"
-        fi
-        if [ -n "$region" ]; then
-          echo "SCCACHE_REGION=$region" >> "$GITHUB_ENV"
-        elif [ -n "$bucket" ]; then
-          echo "SCCACHE_REGION=auto" >> "$GITHUB_ENV"
-        fi
-        if [ -n "$key_id" ]; then
-          echo "AWS_ACCESS_KEY_ID=$key_id" >> "$GITHUB_ENV"
-        fi
-        if [ -n "$secret" ]; then
-          echo "AWS_SECRET_ACCESS_KEY=$secret" >> "$GITHUB_ENV"
+        if [ -n "$bucket" ]; then echo "SCCACHE_BUCKET=$bucket" >> "$GITHUB_ENV"; fi
+        if [ -n "$endpoint" ]; then echo "SCCACHE_ENDPOINT=$endpoint" >> "$GITHUB_ENV"; fi
+        if [ -n "$region" ]; then echo "SCCACHE_REGION=$region" >> "$GITHUB_ENV"
+        elif [ -n "$bucket" ]; then echo "SCCACHE_REGION=auto" >> "$GITHUB_ENV"; fi
+        if [ -n "$key_id" ]; then echo "AWS_ACCESS_KEY_ID=$key_id" >> "$GITHUB_ENV"; fi
+        if [ -n "$secret" ]; then echo "AWS_SECRET_ACCESS_KEY=$secret" >> "$GITHUB_ENV"; fi
+
+        # Platform-default object dir when unset (engine also honors CARGO_TOG_CACHE_DIR)
+        if [ -z "${CARGO_TOG_CACHE_DIR:-}" ]; then
+          case "$(uname -s 2>/dev/null || echo unknown)" in
+            Darwin)
+              echo "CARGO_TOG_CACHE_DIR=${HOME}/Library/Caches/cargo-tog" >> "$GITHUB_ENV"
+              ;;
+            MINGW*|MSYS*|CYGWIN*|Windows_NT)
+              # GitHub Windows bash: LOCALAPPDATA is set
+              echo "CARGO_TOG_CACHE_DIR=${LOCALAPPDATA:-$HOME/AppData/Local}/cargo-tog" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "CARGO_TOG_CACHE_DIR=${XDG_CACHE_HOME:-$HOME/.cache}/cargo-tog" >> "$GITHUB_ENV"
+              ;;
+          esac
         fi
 
         if [ "${{ inputs.compiler-cache }}" != "true" ]; then
@@ -100,24 +109,36 @@ runs:
       if: inputs.compiler-cache == 'true'
       uses: mozilla-actions/sccache-action@v0.0.11
 
-    - name: Install cargo-tog-rustc
-      if: inputs.compiler-cache == 'true'
+    - name: Install native cargo-tog-rustc
+      if: inputs.compiler-cache == 'true' && inputs.install-wrapper == 'true'
       shell: bash
       run: |
         set -euo pipefail
-        wrap="${RUNNER_TEMP}/cargo-tog-rustc"
-        cat > "$wrap" <<'WRAP'
-        #!/usr/bin/env bash
-        # cargo-tog public RUSTC_WRAPPER
-        set -euo pipefail
-        if command -v sccache >/dev/null 2>&1; then
-          exec sccache "$@"
+        # Composite actions: github.action_path is .../action ; repo root is parent.
+        ROOT="${{ github.action_path }}/.."
+        ROOT="$(cd "$ROOT" && pwd)"
+        if [ ! -f "$ROOT/Cargo.toml" ]; then
+          echo "cargo-tog: Cargo.toml not found at action root; using engine binary name only"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          exit 0
         fi
-        exec "${RUSTC:-rustc}" "$@"
-        WRAP
-        chmod +x "$wrap"
-        echo "RUSTC_WRAPPER=$wrap" >> "$GITHUB_ENV"
-        echo "cargo-tog: RUSTC_WRAPPER=cargo-tog-rustc"
+        # Needs rustc/cargo already on PATH (install toolchain before this action).
+        cargo install --path "$ROOT" --bin cargo-tog-rustc --root "${RUNNER_TEMP}/cargo-tog-prefix" --locked --force
+        echo "${RUNNER_TEMP}/cargo-tog-prefix/bin" >> "$GITHUB_PATH"
+        # Windows cargo install puts .exe here; name without extension is fine for RUSTC_WRAPPER.
+        echo "RUSTC_WRAPPER=cargo-tog-rustc" >> "$GITHUB_ENV"
+        echo "cargo-tog: installed native cargo-tog-rustc → RUSTC_WRAPPER"
+
+    - name: Fallback wrapper name if install skipped
+      if: inputs.compiler-cache == 'true' && inputs.install-wrapper != 'true'
+      shell: bash
+      run: |
+        if command -v cargo-tog-rustc >/dev/null 2>&1; then
+          echo "RUSTC_WRAPPER=cargo-tog-rustc" >> "$GITHUB_ENV"
+        else
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo "cargo-tog: install-wrapper=false and cargo-tog-rustc missing; using engine on PATH"
+        fi
 
     - name: Restore registry / git cache
       if: inputs.registry-cache == 'true'

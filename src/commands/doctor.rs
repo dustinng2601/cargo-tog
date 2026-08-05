@@ -1,8 +1,12 @@
+use std::env;
 use std::process::Command;
 
 use anyhow::Result;
-
-use crate::paths::home_dir;
+use cargo_tog::engine::{engine_version_line, find_engine};
+use cargo_tog::platform::{
+    cache_key_host_fragment, default_cargo_home_display, default_object_cache_dir,
+    host_triple_hint, rustc_wrapper_bin_name, OsFamily,
+};
 
 pub fn run() -> Result<()> {
     println!("cargo-tog doctor\n");
@@ -10,61 +14,65 @@ pub fn run() -> Result<()> {
     print_cmd_version("cargo", &["--version"]);
     print_cmd_version("rustc", &["--version"]);
 
-    let engine_ok = match Command::new("sccache").arg("--version").output() {
-        Ok(out) if out.status.success() => {
-            let line = String::from_utf8_lossy(&out.stdout);
-            let first = line.lines().next().unwrap_or("installed");
-            println!("compiler-cache engine: installed ({first})");
-            true
-        }
-        _ => {
-            println!(
-                "compiler-cache engine: not installed (cargo-tog-rustc falls back to rustc)"
-            );
-            false
-        }
-    };
+    println!("host_os: {}", OsFamily::current().as_str());
+    println!("host_triple_hint: {}", host_triple_hint());
+    println!("cache_key_host: {}", cache_key_host_fragment());
 
-    let wrapper = std::env::var("RUSTC_WRAPPER").unwrap_or_else(|_| "(unset)".into());
+    match engine_version_line() {
+        Some(line) => println!("compiler-cache engine: installed ({line})"),
+        None => println!(
+            "compiler-cache engine: not installed (cargo-tog-rustc falls back to rustc)"
+        ),
+    }
+    if let Some(path) = find_engine() {
+        println!("compiler-cache engine path: {}", path.display());
+    }
+
+    let wrapper = env::var("RUSTC_WRAPPER").unwrap_or_else(|_| "(unset)".into());
     println!("RUSTC_WRAPPER: {wrapper}");
+    println!("wrapper_bin_name: {}", rustc_wrapper_bin_name());
 
-    let cargo_home = std::env::var("CARGO_HOME").unwrap_or_else(|_| {
-        home_dir()
-            .map(|h| h.join(".cargo").display().to_string() + " (default)")
-            .unwrap_or_else(|| "(unknown)".into())
-    });
-    println!("CARGO_HOME: {cargo_home}");
+    println!("CARGO_HOME: {}", default_cargo_home_display());
 
-    let target = std::env::var("CARGO_TARGET_DIR")
+    let target = env::var("CARGO_TARGET_DIR")
         .unwrap_or_else(|_| "(unset — per-project ./target)".into());
     println!("CARGO_TARGET_DIR: {target}");
 
-    let cache_dir = std::env::var("CARGO_TOG_CACHE_DIR").unwrap_or_else(|_| {
-        home_dir()
-            .map(|h| {
-                h.join(".cache/cargo-tog").display().to_string() + " (default)"
-            })
-            .unwrap_or_else(|| "(unknown)".into())
-    });
-    println!("CARGO_TOG_CACHE_DIR: {cache_dir}");
+    let cache_dir = default_object_cache_dir();
+    println!(
+        "CARGO_TOG_CACHE_DIR: {}{}",
+        cache_dir.display(),
+        if env::var_os("CARGO_TOG_CACHE_DIR").is_some() {
+            ""
+        } else {
+            " (platform default)"
+        }
+    );
 
-    let bucket =
-        std::env::var("CARGO_TOG_BUCKET").unwrap_or_else(|_| "(unset — local/GHA objects only)".into());
+    let bucket = env::var("CARGO_TOG_BUCKET")
+        .unwrap_or_else(|_| "(unset — local or GitHub-hosted objects only)".into());
     println!("CARGO_TOG_BUCKET: {bucket}");
 
-    if std::env::var_os("CARGO_TARGET_DIR").is_some() {
+    if env::var_os("CARGO_TARGET_DIR").is_some() {
         println!(
             "\nwarn: CARGO_TARGET_DIR is set. Use only for one workspace checkout, not every project."
         );
     }
-    if wrapper != "cargo-tog-rustc" && engine_ok {
+
+    let wrapper_ok = wrapper.contains("cargo-tog-rustc");
+    if !wrapper_ok && find_engine().is_some() {
         println!(
-            "\nhint: set RUSTC_WRAPPER=cargo-tog-rustc (install cargo-tog or put scripts/ on PATH)."
+            "\nhint: set RUSTC_WRAPPER=cargo-tog-rustc (install both bins: cargo install --path .)"
         );
     }
 
-    println!("\nShare: registry + cargo-tog compiler cache. Not target/ across workspaces.");
-    println!("Source sync: advanced optional only — caching does not require it.");
+    println!("\nCross-OS notes:");
+    println!("  • Registry downloads: shareable across OS");
+    println!("  • Compiler objects: per target triple only (linux ≠ darwin ≠ windows-msvc)");
+    println!("  • Same remote bucket is fine; keys partition by triple automatically");
+    println!("  • See docs/CROSS_OS.md");
+
+    println!("\nSource sync: advanced optional only — caching does not require it.");
     Ok(())
 }
 

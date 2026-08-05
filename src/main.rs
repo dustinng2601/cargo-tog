@@ -1,11 +1,6 @@
-//! cargo-tog — enterprise Cargo build-cache coordination.
-//!
-//! Core: doctor, cache-plan, inventory, dep-drift, lock-fingerprint.
-//! Advanced (optional): sync — not required for caching.
+//! cargo-tog — enterprise Cargo build-cache coordination (cross-OS).
 
-mod cargo_toml;
 mod commands;
-mod paths;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -14,10 +9,11 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "cargo-tog",
     version,
-    about = "Enterprise Cargo build-cache coordination for monorepos and polyrepos",
-    long_about = "Coordinate registry and compiler-object caches across projects.\n\n\
-Source file sync is an advanced optional utility — caching does not require it.\n\
-See docs/PRODUCTION.md and docs/RESEARCH.md."
+    about = "Enterprise Cargo build-cache coordination (macOS / Linux / Windows)",
+    long_about = "Coordinate registry and compiler-object caches across projects and OSes.\n\n\
+Compiler objects are per target triple (not shared across macOS/Linux/Windows).\n\
+Registry downloads can be shared. Source sync is advanced/optional only.\n\
+See docs/CROSS_OS.md and docs/PRODUCTION.md."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -26,13 +22,12 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Health check: toolchain, wrapper, cache environment
+    /// Health check: toolchain, wrapper, cache environment, host triple
     Doctor,
     /// Print production share policy (what to cache / not cache)
     CachePlan,
     /// Map packages and workspace dependency pins under a tree
     Inventory {
-        /// Workspace or monorepo root
         #[arg(long, default_value = ".")]
         root: String,
     },
@@ -48,14 +43,14 @@ enum Commands {
         #[arg(long, default_value = ".")]
         root: String,
     },
+    /// Print recommended CI cache key fragments for this host
+    HostKey,
     /// Advanced: partial file mirrors (optional; not required for cache)
     Sync {
         #[arg(long, default_value = "cargo-tog.toml")]
         config: String,
-        /// Report drift only (default if --apply is absent)
         #[arg(long)]
         check: bool,
-        /// Copy source → target for listed files
         #[arg(long)]
         apply: bool,
     },
@@ -72,6 +67,10 @@ fn main() -> Result<()> {
         Commands::Inventory { root } => commands::inventory::run(&root),
         Commands::DepDrift { master, other } => commands::dep_drift::run(&master, &other),
         Commands::LockFingerprint { root } => commands::lock_fingerprint::run(&root),
+        Commands::HostKey => {
+            commands::host_key::run();
+            Ok(())
+        }
         Commands::Sync {
             config,
             check,

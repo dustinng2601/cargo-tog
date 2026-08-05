@@ -5,7 +5,7 @@ use anyhow::Result;
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
-use crate::paths::resolve_path;
+use cargo_tog::paths::resolve_path;
 
 pub fn run(root: &str) -> Result<()> {
     let root = resolve_path(root);

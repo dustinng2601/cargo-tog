@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  # Optional multi-repo object store (empty → GitHub-hosted objects)
+  CARGO_TOG_BUCKET: ${{ secrets.CARGO_TOG_BUCKET }}
+  CARGO_TOG_ENDPOINT: ${{ secrets.CARGO_TOG_ENDPOINT }}
+  CARGO_TOG_REGION: ${{ secrets.CARGO_TOG_REGION }}
+  CARGO_TOG_ACCESS_KEY_ID: ${{ secrets.CARGO_TOG_ACCESS_KEY_ID }}
+  CARGO_TOG_SECRET_ACCESS_KEY: ${{ secrets.CARGO_TOG_SECRET_ACCESS_KEY }}
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # Bootstrap: use Action from this repo (compiler engine + registry cache)
+      - name: cargo-tog cache setup
+        uses: ./action
+        with:
+          key: cargo-tog-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}
+          install-nextest: "true"
+
+      - name: Build cargo-tog bins
+        run: cargo build --release --locked
+
+      - name: Install bins on PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cp target/release/cargo-tog.exe target/release/cargo-tog-rustc.exe "$HOME/.local/bin/" || \
+              cp target/release/cargo-tog.exe target/release/cargo-tog-rustc.exe "/c/Users/runneradmin/.local/bin/" 2>/dev/null || true
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+            # Also put next to cargo
+            BINDIR="${CARGO_HOME:-$HOME/.cargo}/bin"
+            mkdir -p "$BINDIR"
+            cp target/release/cargo-tog.exe target/release/cargo-tog-rustc.exe "$BINDIR/"
+          else
+            install -m 755 target/release/cargo-tog target/release/cargo-tog-rustc "$HOME/.local/bin/"
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+            BINDIR="${CARGO_HOME:-$HOME/.cargo}/bin"
+            mkdir -p "$BINDIR"
+            install -m 755 target/release/cargo-tog target/release/cargo-tog-rustc "$BINDIR/"
+          fi
+
+      - name: Unit tests
+        run: cargo test --locked
+
+      - name: Doctor + host-key
+        shell: bash
+        run: |
+          cargo-tog doctor
+          cargo-tog host-key
+          cargo-tog cache-plan | head -20
+
+      - name: Wrapper smoke (compile with RUSTC_WRAPPER)
+        shell: bash
+        env:
+          RUSTC_WRAPPER: cargo-tog-rustc
+        run: |
+          cargo build -q --locked
+          cargo-tog doctor

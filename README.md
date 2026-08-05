@@ -1,41 +1,68 @@
 # cargo-tog
 
-**Enterprise-oriented Cargo build-cache coordination** for monorepos, polyrepos,
-and multi-project CI—without abandoning Cargo.
+**Enterprise Cargo build-cache coordination** for monorepos, polyrepos, and
+multi-OS CI (macOS · Linux · Windows)—without leaving Cargo.
 
 ```text
-Primary:   registry cache + compiler object cache (local / GitHub-hosted / remote)
-Optional:  inventory, dep-drift, lock fingerprints
-Advanced:  partial file mirrors (not required for cache; most orgs never need this)
+Primary:   registry cache + compiler object cache (per target triple)
+Optional:  inventory, dep-drift, lock fingerprints, host-key
+Advanced:  partial file mirrors (not required for cache)
 ```
 
-## Why it exists
+## Cross-OS in one screen
 
-Rust CI time is dominated by **re-downloading crates** and **recompiling the same
-dependency graph**. Teams try to “share `target/`” across repos and hurt
-correctness. cargo-tog encodes the production pattern used by mature Cargo shops:
+| Layer | Share across macOS / Linux / Windows? |
+|-------|----------------------------------------|
+| crates.io / git downloads | **Yes** |
+| Compiler objects | **No — per target triple only** |
+| `target/` | **No** |
+| One remote `CARGO_TOG_BUCKET` | **Yes** (engine partitions by triple) |
 
-1. **Share downloads** (`CARGO_HOME` / registry cache)  
-2. **Share compiler objects** via a content-addressed object cache (remote bucket
-   for multi-repo)  
-3. **Keep `target/` per workspace**  
-4. Stay on **Cargo + nextest**—no forced migration to Bazel  
+Deep dive: **[docs/CROSS_OS.md](docs/CROSS_OS.md)** · Production: **[docs/PRODUCTION.md](docs/PRODUCTION.md)** · Research: **[docs/RESEARCH.md](docs/RESEARCH.md)**
 
-Research background: [docs/RESEARCH.md](docs/RESEARCH.md)  
-Production checklist: [docs/PRODUCTION.md](docs/PRODUCTION.md)
+```text
+     CARGO_TOG_BUCKET (optional remote)
+              │
+   ┌──────────┼──────────┐
+   │          │          │
+ linux     darwin     windows-msvc     ← separate object spaces
+ objects   objects    objects
+   │          │          │
+ own target/ on each runner OS
+   │          │          │
+   └──────────┼──────────┘
+        shared downloads (CARGO_HOME)
+```
 
-## What you configure (our names)
+## Install (all OSes)
 
-| Surface | Purpose |
-|---------|---------|
-| **cargo-tog** Action / CLI | Install, policy, observability |
-| **`cargo-tog-rustc`** | `RUSTC_WRAPPER` public name |
-| **`CARGO_TOG_BUCKET`** (+ endpoint, region, keys) | Remote multi-repo object store |
-| **`CARGO_TOG_CACHE_DIR`** | Local object directory on laptops/runners |
+```sh
+cargo install --path .
+# installs two binaries:
+#   cargo-tog
+#   cargo-tog-rustc    ← set as RUSTC_WRAPPER
+```
 
-Day-to-day ops use **CARGO_TOG_*** only. Cache engines are an implementation detail.
+```sh
+# Unix
+export RUSTC_WRAPPER=cargo-tog-rustc
 
-## Quick start (CI)
+# Windows cmd
+set RUSTC_WRAPPER=cargo-tog-rustc
+
+cargo-tog doctor
+cargo-tog host-key
+```
+
+### Default object cache dirs
+
+| OS | `CARGO_TOG_CACHE_DIR` default |
+|----|-------------------------------|
+| macOS | `~/Library/Caches/cargo-tog` |
+| Linux | `$XDG_CACHE_HOME/cargo-tog` or `~/.cache/cargo-tog` |
+| Windows | `%LOCALAPPDATA%\cargo-tog` |
+
+## CI (matrix)
 
 ```yaml
 env:
@@ -45,94 +72,58 @@ env:
   CARGO_TOG_ACCESS_KEY_ID: ${{ secrets.CARGO_TOG_ACCESS_KEY_ID }}
   CARGO_TOG_SECRET_ACCESS_KEY: ${{ secrets.CARGO_TOG_SECRET_ACCESS_KEY }}
 
+strategy:
+  matrix:
+    include:
+      - os: ubuntu-22.04
+        target: x86_64-unknown-linux-gnu
+      - os: macos-14
+        target: aarch64-apple-darwin
+      - os: windows-2022
+        target: x86_64-pc-windows-msvc
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: your-org/cargo-tog/action@v0   # pin SHA in regulated envs
+      - uses: your-org/cargo-tog/action@main
         with:
-          key: test-${{ runner.os }}-${{ runner.arch }}
+          key: test-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}
           install-nextest: "true"
       - run: cargo nextest run --workspace
 ```
 
-| Secrets empty | Secrets set |
-|---------------|-------------|
-| GitHub-hosted object cache + registry cache | **Multi-repo** object reuse on same OS/target/rustc |
+Empty bucket secrets → GitHub-hosted objects (still fine per OS).  
+Set org secrets once → multi-**repo** reuse **within** each triple.
 
-## Quick start (laptop)
+## Public contract (`CARGO_TOG_*`)
 
-```sh
-# Install the Rust CLI
-cargo install --path .
-# or: cargo build --release && install -m 755 target/release/cargo-tog ~/.cargo/bin/
-
-export PATH="/path/to/cargo-tog/scripts:$PATH"   # cargo-tog-rustc wrapper
-export RUSTC_WRAPPER=cargo-tog-rustc
-export CARGO_TOG_CACHE_DIR="$HOME/.cache/cargo-tog"
-
-cargo-tog doctor
-cargo-tog cache-plan
-cargo-tog inventory --root /path/to/workspace
-```
-
-The CLI is **Rust** (this repo’s `cargo-tog` binary). The GitHub Action stays YAML
-(composite actions are not written in Rust). A thin `scripts/cargo-tog.mjs` may
-remain only as a fallback shim.
+| Name | Role |
+|------|------|
+| `cargo-tog` | CLI |
+| `cargo-tog-rustc` | Native `RUSTC_WRAPPER` (all OSes) |
+| `CARGO_TOG_BUCKET` / `ENDPOINT` / `REGION` / keys | Remote objects |
+| `CARGO_TOG_CACHE_DIR` | Local object directory |
 
 ## CLI
 
 ```text
-cargo-tog doctor              Health: toolchain, wrapper, cache env
-cargo-tog cache-plan          Print share policy
-cargo-tog inventory           Map packages / workspace deps
-cargo-tog dep-drift           Compare pins across two trees
-cargo-tog lock-fingerprint    Stable hashes for cache keys
-cargo-tog sync                Advanced only — partial mirrors (see docs/SYNC.md)
-```
-
-## Architecture (one screen)
-
-```text
-                 ┌─────────────────────────────┐
-                 │ Remote object store (opt.)  │  multi-repo compile units
-                 │ CARGO_TOG_BUCKET            │
-                 └──────────────▲──────────────┘
-                                │
-              ┌─────────────────┼─────────────────┐
-              │                 │                 │
-         Repo A CI         Repo B CI         Developer laptop
-              │                 │                 │
-         own target/       own target/       own target/
-              │                 │                 │
-              └─────────────────┼─────────────────┘
-                                │
-                     shared CARGO_HOME downloads
+cargo-tog doctor
+cargo-tog host-key
+cargo-tog cache-plan
+cargo-tog inventory --root <path>
+cargo-tog dep-drift --master <a> --other <b>
+cargo-tog lock-fingerprint --root <path>
+cargo-tog sync …          # advanced only
 ```
 
 ## Non-goals
 
-| Out of scope | Prefer instead |
-|--------------|----------------|
-| Hermetic multi-lang monorepo platform | Bazel / Buck remote cache |
-| Workspace-hack generation | cargo-hakari / cargo-rail |
-| Docker layer cooking | cargo-chef |
-| **Mandatory multi-repo source sync** | Don’t—only [advanced SYNC](docs/SYNC.md) |
-
-## Quality bar
-
-- Fail **safe** when remote cache is unset (still accelerate per-repo)  
-- Never require uploading full `target/` to GH cache  
-- nextest / cargo test / bench share one compiler wrapper  
-- Document security, capacity, and failure modes ([PRODUCTION.md](docs/PRODUCTION.md))  
-- Research-backed defaults ([RESEARCH.md](docs/RESEARCH.md))  
-
-## Versioning
-
-Pin the GitHub Action to a tag or commit SHA in regulated environments.  
-See [CHANGELOG.md](CHANGELOG.md).
+- Sharing compile objects **across** OS/target triples  
+- Replacing Cargo with Bazel  
+- Mandatory multi-repo source sync  
 
 ## License
 
