@@ -1,32 +1,38 @@
-# Cache layers (cargo-tog)
+# Cache layers
 
-## 1. Registry cache — share freely
+## 1. Registry / git downloads — share
 
-`CARGO_HOME` downloads (crates.io + git). Safe across all projects on a machine
-or runner.
+`CARGO_HOME` (crates.io sparse index + git deps). Safe across all projects.
 
-## 2. Compiler cache — share with a remote bucket
+**CI:** rust-cache style registry persistence, **without** packing `target/`.
 
-cargo-tog’s **compiler cache** stores object-level compile results. With a
-remote bucket (`CARGO_TOG_BUCKET` + credentials), jobs in **different repos**
-can hit the same objects (same rustc, target, similar flags).
+## 2. Compiler objects — share with policy
 
-| Mode | When |
+Content-addressed compile units via **cargo-tog** (`cargo-tog-rustc` wrapper).
+
+| Backend | Scope |
+|---------|--------|
+| Local disk (`CARGO_TOG_CACHE_DIR`) | Machine |
+| GitHub-hosted | Per-repo / workflow convenience |
+| Remote bucket (`CARGO_TOG_BUCKET`) | Multi-repo, multi-job, multi-machine |
+
+**CI:** set `CARGO_INCREMENTAL=0` so object cache owns reuse.
+
+Works with: `cargo build`, `test`, `nextest`, `bench`, `clippy` (compile path).
+
+## 3. `target/` — isolate
+
+One directory per workspace checkout. Do not share across unrelated graphs.
+
+## 4. Complementary tools (not cargo-tog)
+
+| Need | Tool |
 |------|------|
-| GitHub-hosted | Bucket secrets empty |
-| Remote (S3-compatible / R2) | `CARGO_TOG_BUCKET` set |
+| Feature-unified workspace hack | cargo-hakari |
+| Docker dep layers | cargo-chef |
+| Hermetic remote exec | Bazel |
+| Fast test runner | nextest (uses layer 2 automatically) |
 
-Applies to `cargo test`, `cargo nextest`, `cargo build`, `cargo bench`.
+## 5. Source mirrors
 
-CI tip: `CARGO_INCREMENTAL=0` so reuse comes from the compiler cache, not
-throwaway incremental dirs on the runner.
-
-## 3. `target/` — do not casually share
-
-One `target/` (or `CARGO_TARGET_DIR`) **per workspace**. Not across unrelated
-repos.
-
-## 4. Code sync — separate product surface
-
-Keeping file **bytes** identical across git repos is **not** a cache feature.
-See [SYNC.md](SYNC.md). Optional; not required for any cache mode.
+**Not a cache layer.** See [SYNC.md](SYNC.md) (advanced, optional, not required).

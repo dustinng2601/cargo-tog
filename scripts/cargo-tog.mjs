@@ -146,19 +146,19 @@ function resolvePackageVersion(parsed, workspacePackageVersion) {
 }
 
 function cmdHelp() {
-  console.log(`cargo-tog — multi-repo Cargo cache (+ optional code mirrors)
+  console.log(`cargo-tog — enterprise Cargo build-cache coordination
 
-Usage:
+Core:
   cargo-tog doctor
   cargo-tog cache-plan
   cargo-tog inventory --root <path>
   cargo-tog dep-drift --master <path> --other <path>
   cargo-tog lock-fingerprint --root <path>
-  cargo-tog sync --config <cargo-tog.toml> --check
-  cargo-tog sync --config <cargo-tog.toml> --apply
 
-Cache does not need code sync. Sync is optional for partial mirrors.
-See README.md, docs/LAYERS.md, docs/SYNC.md.`);
+Advanced (optional; not required for caching):
+  cargo-tog sync --config <toml> --check | --apply
+
+Docs: README.md · docs/PRODUCTION.md · docs/RESEARCH.md`);
 }
 
 function cmdDoctor() {
@@ -197,36 +197,31 @@ function cmdDoctor() {
 }
 
 function cmdCachePlan() {
-  console.log(`# cargo-tog cache plan
+  console.log(`# cargo-tog production cache plan
 #
 # SHARE
-# -----
-# 1. CARGO_HOME registry + git
-# 2. Compiler objects via cargo-tog (remote CARGO_TOG_BUCKET for multi-repo)
-# 3. Optional dep pins + dep-drift
+#   • CARGO_HOME registry + git downloads
+#   • Compiler objects (CARGO_TOG_BUCKET for multi-repo remote)
 #
 # DO NOT SHARE
-# ------------
-# 1. One CARGO_TARGET_DIR for unrelated workspaces
-# 2. Full target/ upload to GitHub Actions
+#   • target/ across unrelated workspaces
+#   • full target/ in GitHub Actions cache
 #
-# CODE SYNC
-# ---------
-# Not required for cache. Use only for partial file mirrors:
-#   cargo-tog sync --config cargo-tog.toml --check
-# See docs/SYNC.md
+# CI DEFAULTS
+#   CARGO_INCREMENTAL=0  CARGO_PROFILE_DEV_DEBUG=0  cache-targets=false
+#   RUSTC_WRAPPER=cargo-tog-rustc
+#   secrets: CARGO_TOG_BUCKET, CARGO_TOG_ENDPOINT, CARGO_TOG_REGION,
+#            CARGO_TOG_ACCESS_KEY_ID, CARGO_TOG_SECRET_ACCESS_KEY
 #
-# Laptop
-# ------
-export PATH=".../cargo-tog/scripts:$PATH"
-export RUSTC_WRAPPER=cargo-tog-rustc
-export CARGO_TOG_CACHE_DIR="$HOME/.cache/cargo-tog"
+# LOCAL
+#   export RUSTC_WRAPPER=cargo-tog-rustc
+#   export CARGO_TOG_CACHE_DIR=$HOME/.cache/cargo-tog
 #
-# CI
-# --
-# secrets: CARGO_TOG_BUCKET, CARGO_TOG_ENDPOINT, CARGO_TOG_REGION,
-#          CARGO_TOG_ACCESS_KEY_ID, CARGO_TOG_SECRET_ACCESS_KEY
-# Action sets cargo-tog-rustc; cargo test / nextest / bench all reuse objects.
+# NOT REQUIRED FOR CACHE
+#   source sync / partial mirrors (docs/SYNC.md — advanced only)
+#
+# SEE ALSO
+#   docs/PRODUCTION.md  docs/RESEARCH.md  docs/LAYERS.md
 `);
 }
 
@@ -271,13 +266,14 @@ function parseSyncConfig(text) {
 }
 
 function cmdSync() {
+  console.log("cargo-tog sync is an advanced optional utility (not part of core cache).\n");
   const configPath = resolve(expandHome(flag("--config") || "cargo-tog.toml"));
   const check = has("--check") || !has("--apply");
   const apply = has("--apply");
   if (!existsSync(configPath)) {
     console.error(`config not found: ${configPath}`);
-    console.error("Code sync is optional. Copy config/cargo-tog.example.toml or see docs/SYNC.md.");
-    console.error("You do NOT need sync for compiler/registry caching.");
+    console.error("Most teams never need sync. Caching works without it.");
+    console.error("See docs/SYNC.md only if you maintain partial file mirrors.");
     process.exit(1);
   }
   const mirrors = parseSyncConfig(readFileSync(configPath, "utf8"));

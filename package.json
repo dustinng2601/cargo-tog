@@ -2,18 +2,16 @@
   "name": "cargo-tog",
   "version": "0.1.0",
   "private": true,
-  "description": "Coordinate Cargo caches and dependency pins across monorepos and polyrepos",
+  "description": "Enterprise Cargo build-cache coordination for monorepos and polyrepos",
   "type": "module",
   "bin": {
     "cargo-tog": "./scripts/cargo-tog.mjs"
   },
   "scripts": {
-    "cargo-tog": "node scripts/cargo-tog.mjs",
     "doctor": "node scripts/cargo-tog.mjs doctor",
-    "cache-plan": "node scripts/cargo-tog.mjs cache-plan"
+    "cache-plan": "node scripts/cargo-tog.mjs cache-plan",
+    "test:smoke": "node scripts/cargo-tog.mjs doctor && node scripts/cargo-tog.mjs cache-plan && node scripts/cargo-tog.mjs help"
   },
-  "engines": {
-    "node": ">=18"
-  },
+  "engines": { "node": ">=18" },
   "license": "MIT"
 }

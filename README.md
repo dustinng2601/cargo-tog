@@ -1,56 +1,41 @@
 # cargo-tog
 
-**Cargo, together.** Multi-repo Rust **build cache** coordination, plus optional
-**partial code mirrors** — under **your** names, for any org or laptop.
+**Enterprise-oriented Cargo build-cache coordination** for monorepos, polyrepos,
+and multi-project CI—without abandoning Cargo.
 
 ```text
-cargo-tog cache   →  reuse crate downloads + compiler objects (CI + local)
-cargo-tog sync    →  optional: keep listed files identical across repos
+Primary:   registry cache + compiler object cache (local / GitHub-hosted / remote)
+Optional:  inventory, dep-drift, lock fingerprints
+Advanced:  partial file mirrors (not required for cache; most orgs never need this)
 ```
 
-Caching does **not** require code sync. Code sync is only for partial mirrors.
+## Why it exists
 
-## Public names (ours)
+Rust CI time is dominated by **re-downloading crates** and **recompiling the same
+dependency graph**. Teams try to “share `target/`” across repos and hurt
+correctness. cargo-tog encodes the production pattern used by mature Cargo shops:
 
-| You say / set | Meaning |
-|---------------|---------|
-| **cargo-tog** | This project + CLI + CI Action |
-| **compiler cache** | Object-level compile reuse across jobs/repos |
-| **registry cache** | crates.io / git download reuse |
-| **`CARGO_TOG_BUCKET`** etc. | Your secrets for remote object storage |
-| **`cargo-tog-rustc`** | Wrapper set as `RUSTC_WRAPPER` in CI |
+1. **Share downloads** (`CARGO_HOME` / registry cache)  
+2. **Share compiler objects** via a content-addressed object cache (remote bucket
+   for multi-repo)  
+3. **Keep `target/` per workspace**  
+4. Stay on **Cargo + nextest**—no forced migration to Bazel  
 
-You do **not** configure day-to-day life in terms of other tools’ product names.
-Engines under the hood are an implementation detail of the Action.
+Research background: [docs/RESEARCH.md](docs/RESEARCH.md)  
+Production checklist: [docs/PRODUCTION.md](docs/PRODUCTION.md)
 
-## Share matrix (cache)
+## What you configure (our names)
 
-| Layer | Share across repos? |
-|-------|---------------------|
-| Registry / git downloads | **Yes** |
-| Compiler objects (remote bucket) | **Yes** |
-| Full `target/` directory | **No** (per workspace only) |
+| Surface | Purpose |
+|---------|---------|
+| **cargo-tog** Action / CLI | Install, policy, observability |
+| **`cargo-tog-rustc`** | `RUSTC_WRAPPER` public name |
+| **`CARGO_TOG_BUCKET`** (+ endpoint, region, keys) | Remote multi-repo object store |
+| **`CARGO_TOG_CACHE_DIR`** | Local object directory on laptops/runners |
 
-## Multi-repo code sync — need it?
+Day-to-day ops use **CARGO_TOG_*** only. Cache engines are an implementation detail.
 
-| | |
-|--|--|
-| **Need it for cache?** | **No** |
-| **Need it if each repo is independent?** | **No** |
-| **Need it if you copy the same sources into split git repos?** | **Optional helper** — see [docs/SYNC.md](docs/SYNC.md) |
-
-If you only want faster builds: **cache only**.
-
-## Quick start
-
-```sh
-node scripts/cargo-tog.mjs doctor
-node scripts/cargo-tog.mjs cache-plan
-node scripts/cargo-tog.mjs inventory --root /path/to/workspace
-node scripts/cargo-tog.mjs sync --config cargo-tog.toml --check   # optional mirrors
-```
-
-### CI
+## Quick start (CI)
 
 ```yaml
 env:
@@ -60,27 +45,86 @@ env:
   CARGO_TOG_ACCESS_KEY_ID: ${{ secrets.CARGO_TOG_ACCESS_KEY_ID }}
   CARGO_TOG_SECRET_ACCESS_KEY: ${{ secrets.CARGO_TOG_SECRET_ACCESS_KEY }}
 
-steps:
-  - uses: actions/checkout@v4
-  - uses: dtolnay/rust-toolchain@stable
-  - uses: your-org/cargo-tog/action@main
-    with:
-      key: test-${{ runner.os }}-${{ runner.arch }}
-      install-nextest: "true"   # optional; same compiler cache
-  - run: cargo nextest run --workspace
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: your-org/cargo-tog/action@v0   # pin SHA in regulated envs
+        with:
+          key: test-${{ runner.os }}-${{ runner.arch }}
+          install-nextest: "true"
+      - run: cargo nextest run --workspace
 ```
 
-Empty bucket secrets → GitHub-hosted object cache (still fine per repo).  
-Set the bucket once at **org** level → multi-repo compile reuse.
+| Secrets empty | Secrets set |
+|---------------|-------------|
+| GitHub-hosted object cache + registry cache | **Multi-repo** object reuse on same OS/target/rustc |
 
-## Docs
+## Quick start (laptop)
 
-- [docs/LAYERS.md](docs/LAYERS.md) — what to share  
-- [docs/SYNC.md](docs/SYNC.md) — code mirrors (optional)  
-- [docs/GITHUB_ACTIONS.md](docs/GITHUB_ACTIONS.md)  
-- [docs/LOCAL_DEV.md](docs/LOCAL_DEV.md)  
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)  
+```sh
+export PATH="/path/to/cargo-tog/scripts:$PATH"
+export RUSTC_WRAPPER=cargo-tog-rustc
+export CARGO_TOG_CACHE_DIR="$HOME/.cache/cargo-tog"
+
+node scripts/cargo-tog.mjs doctor
+node scripts/cargo-tog.mjs cache-plan
+```
+
+## CLI
+
+```text
+cargo-tog doctor              Health: toolchain, wrapper, cache env
+cargo-tog cache-plan          Print share policy
+cargo-tog inventory           Map packages / workspace deps
+cargo-tog dep-drift           Compare pins across two trees
+cargo-tog lock-fingerprint    Stable hashes for cache keys
+cargo-tog sync                Advanced only — partial mirrors (see docs/SYNC.md)
+```
+
+## Architecture (one screen)
+
+```text
+                 ┌─────────────────────────────┐
+                 │ Remote object store (opt.)  │  multi-repo compile units
+                 │ CARGO_TOG_BUCKET            │
+                 └──────────────▲──────────────┘
+                                │
+              ┌─────────────────┼─────────────────┐
+              │                 │                 │
+         Repo A CI         Repo B CI         Developer laptop
+              │                 │                 │
+         own target/       own target/       own target/
+              │                 │                 │
+              └─────────────────┼─────────────────┘
+                                │
+                     shared CARGO_HOME downloads
+```
+
+## Non-goals
+
+| Out of scope | Prefer instead |
+|--------------|----------------|
+| Hermetic multi-lang monorepo platform | Bazel / Buck remote cache |
+| Workspace-hack generation | cargo-hakari / cargo-rail |
+| Docker layer cooking | cargo-chef |
+| **Mandatory multi-repo source sync** | Don’t—only [advanced SYNC](docs/SYNC.md) |
+
+## Quality bar
+
+- Fail **safe** when remote cache is unset (still accelerate per-repo)  
+- Never require uploading full `target/` to GH cache  
+- nextest / cargo test / bench share one compiler wrapper  
+- Document security, capacity, and failure modes ([PRODUCTION.md](docs/PRODUCTION.md))  
+- Research-backed defaults ([RESEARCH.md](docs/RESEARCH.md))  
+
+## Versioning
+
+Pin the GitHub Action to a tag or commit SHA in regulated environments.  
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-MIT (`LICENSE-MIT`).
+MIT — [LICENSE-MIT](LICENSE-MIT)

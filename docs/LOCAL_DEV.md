@@ -1,33 +1,41 @@
 # Local development
 
-## Registry
-
-One `CARGO_HOME` per user (default `~/.cargo`) for all clones.
-
-## Compiler cache
+## Recommended profile
 
 ```sh
-# engine binary used under the hood by cargo-tog-rustc — install once
-# (implementation detail; day-to-day you set the wrapper name below)
-cargo install sccache --locked   # or brew install sccache
-
-# our wrapper name on PATH (from this repo)
-export PATH="/path/to/cargo-tog/scripts:$PATH"
+export PATH="/opt/cargo-tog/scripts:$PATH"   # or repo checkout
 export RUSTC_WRAPPER=cargo-tog-rustc
 export CARGO_TOG_CACHE_DIR="${CARGO_TOG_CACHE_DIR:-$HOME/.cache/cargo-tog}"
-# optional remote:
-# export CARGO_TOG_BUCKET=...
-# export CARGO_TOG_ENDPOINT=...
-# export CARGO_TOG_ACCESS_KEY_ID=...
-# export CARGO_TOG_SECRET_ACCESS_KEY=...
 ```
 
-`scripts/cargo-tog-rustc` maps `CARGO_TOG_*` into the engine and execs it.
+Install a compiler-cache **engine** once (prebuilt package preferred over compiling
+from source on every laptop). `cargo-tog-rustc` will use it when present and fall
+back to plain `rustc` if not.
 
-## Target dirs
+## Registry
 
-Per project checkout only. Never one global `CARGO_TARGET_DIR` for all repos.
+Keep a single user-level `CARGO_HOME` for all clones.
 
-## Code sync
+## Remote object store from laptops
 
-Only if you maintain partial mirrors — see [SYNC.md](SYNC.md).
+Optional. Prefer **same-region** endpoints. Cross-continent object GET latency can
+exceed local recompile for small crates—multi-level (local + remote) is ideal
+when the engine supports it.
+
+## Target directories
+
+Per project. Fast local SSD paths are fine:
+
+```sh
+# only inside one repo’s shell
+export CARGO_TARGET_DIR="/var/tmp/cargo-target/my-app"
+```
+
+## Verification
+
+```sh
+node scripts/cargo-tog.mjs doctor
+# build twice; second should be faster on deps
+cargo build -p my-crate
+cargo build -p my-crate
+```
