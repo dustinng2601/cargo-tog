@@ -65,13 +65,22 @@ jobs:
 ## Quick start (laptop)
 
 ```sh
-export PATH="/path/to/cargo-tog/scripts:$PATH"
+# Install the Rust CLI
+cargo install --path .
+# or: cargo build --release && install -m 755 target/release/cargo-tog ~/.cargo/bin/
+
+export PATH="/path/to/cargo-tog/scripts:$PATH"   # cargo-tog-rustc wrapper
 export RUSTC_WRAPPER=cargo-tog-rustc
 export CARGO_TOG_CACHE_DIR="$HOME/.cache/cargo-tog"
 
-node scripts/cargo-tog.mjs doctor
-node scripts/cargo-tog.mjs cache-plan
+cargo-tog doctor
+cargo-tog cache-plan
+cargo-tog inventory --root /path/to/workspace
 ```
+
+The CLI is **Rust** (this repo’s `cargo-tog` binary). The GitHub Action stays YAML
+(composite actions are not written in Rust). A thin `scripts/cargo-tog.mjs` may
+remain only as a fallback shim.
 
 ## CLI
 
