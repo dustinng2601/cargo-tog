@@ -1,0 +1,19 @@
+{
+  "name": "cargo-tog",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Coordinate Cargo caches and dependency pins across a master monorepo + polyrepos",
+  "type": "module",
+  "bin": {
+    "cargo-tog": "./scripts/cargo-tog.mjs"
+  },
+  "scripts": {
+    "cargo-tog": "node scripts/cargo-tog.mjs",
+    "doctor": "node scripts/cargo-tog.mjs doctor",
+    "cache-plan": "node scripts/cargo-tog.mjs cache-plan"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

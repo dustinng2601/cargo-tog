@@ -1,0 +1,28 @@
+# Drop into a polyrepo or monorepo workflow job.
+# Prefer: uses: sd2ek/cargo-tog/action@main when that is wired.
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  RUSTC_WRAPPER: sccache
+  # Local GHA backend (per-repo). For org-wide hits, use R2 secrets instead
+  # and drop SCCACHE_GHA_ENABLED.
+  SCCACHE_GHA_ENABLED: "true"
+
+steps:
+  - uses: actions/checkout@v4
+
+  - uses: dtolnay/rust-toolchain@stable
+    with:
+      toolchain: stable
+
+  - uses: mozilla-actions/sccache-action@v0.0.9
+
+  - uses: Swatinem/rust-cache@v2
+    with:
+      workspaces: ". -> target"
+      cache-targets: false
+      cache-bin: false
+
+  - name: Test
+    run: cargo test --workspace --all-features

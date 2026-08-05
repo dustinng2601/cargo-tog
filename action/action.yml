@@ -1,0 +1,69 @@
+name: cargo-tog
+description: >
+  Sensible Cargo CI env for polyrepo orgs — sccache wrapper, optional rust-cache
+  without uploading target/, smaller debuginfo. Not a shared target/ dir.
+author: sd2ek
+
+inputs:
+  sccache:
+    description: Install sccache and set RUSTC_WRAPPER
+    required: false
+    default: "true"
+  rust-cache:
+    description: Run Swatinem/rust-cache (registry/git; targets off by default)
+    required: false
+    default: "true"
+  workspaces:
+    description: rust-cache workspaces parameter
+    required: false
+    default: ". -> target"
+  cache-targets:
+    description: Upload target/ to GH cache (almost always false with sccache)
+    required: false
+    default: "false"
+  shared-key:
+    description: Extra rust-cache shared-key suffix (e.g. job name)
+    required: false
+    default: ""
+  sccache-remote:
+    description: >
+      If true, expect SCCACHE_BUCKET (+ credentials) in env/secrets for S3/R2.
+      Does not enable GHA sccache backend.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Cargo CI env
+      shell: bash
+      run: |
+        echo "CARGO_TERM_COLOR=always" >> "$GITHUB_ENV"
+        # Debug info dominates cache size; CI does not need full symbols.
+        echo "CARGO_PROFILE_DEV_DEBUG=0" >> "$GITHUB_ENV"
+        if [ "${{ inputs.sccache }}" = "true" ]; then
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          if [ "${{ inputs.sccache-remote }}" = "true" ]; then
+            echo "cargo-tog: remote sccache expected (SCCACHE_BUCKET in env)"
+          else
+            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          fi
+        fi
+
+    - name: sccache
+      if: inputs.sccache == 'true'
+      uses: mozilla-actions/sccache-action@v0.0.9
+
+    - name: rust-cache
+      if: inputs.rust-cache == 'true'
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: ${{ inputs.workspaces }}
+        cache-targets: ${{ inputs.cache-targets }}
+        cache-bin: false
+        shared-key: ${{ inputs.shared-key }}
+
+    - name: Remind about target/
+      shell: bash
+      run: |
+        echo "::notice::cargo-tog does not share target/ across repositories. Use sccache (ideally remote S3/R2) for cross-repo compile hits."

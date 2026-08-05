@@ -1,0 +1,19 @@
+# Org-wide sccache via Cloudflare R2 (S3 API).
+# Set repository or organization secrets, then include these env vars on Rust jobs.
+
+env:
+  RUSTC_WRAPPER: sccache
+  SCCACHE_BUCKET: ${{ secrets.SCCACHE_BUCKET }}
+  SCCACHE_ENDPOINT: ${{ secrets.SCCACHE_ENDPOINT }}
+  SCCACHE_REGION: auto
+  AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+  # Do not set SCCACHE_GHA_ENABLED when using S3/R2.
+
+steps:
+  - uses: mozilla-actions/sccache-action@v0.0.9
+  # rust-cache still useful for registry index; keep targets off
+  - uses: Swatinem/rust-cache@v2
+    with:
+      cache-targets: false
+      cache-bin: false
