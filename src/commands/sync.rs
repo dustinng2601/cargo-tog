@@ -165,8 +165,7 @@ fn parse_sync_config(text: &str) -> Vec<Mirror> {
                 .filter_map(|(i, s)| if i % 2 == 1 { Some(s) } else { None })
                 .collect();
             if parts.len() >= 2 {
-                m.files
-                    .push((parts[0].to_string(), parts[1].to_string()));
+                m.files.push((parts[0].to_string(), parts[1].to_string()));
             }
             if line == "]" {
                 in_files = false;

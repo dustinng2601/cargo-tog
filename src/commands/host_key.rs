@@ -12,7 +12,5 @@ pub fn run() {
         "key: test-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-{}",
         host_triple_hint()
     );
-    println!(
-        "# Objects are NOT shared across OS/target — only within identical triples."
-    );
+    println!("# Objects are NOT shared across OS/target — only within identical triples.");
 }

@@ -24,11 +24,7 @@ pub struct DepDriftArgs {
     #[arg(long)]
     pub json: bool,
 
-    /// Also compare Cargo.lock exact versions when both sides have a lockfile (default: on)
-    #[arg(long, default_value_t = true)]
-    pub lock: bool,
-
-    /// Skip lockfile comparison
+    /// Skip lockfile comparison (on by default when both sides have a Cargo.lock)
     #[arg(long)]
     pub no_lock: bool,
 
@@ -119,7 +115,7 @@ pub fn run_args(args: DepDriftArgs) -> Result<()> {
     let g_m = DepGraph::collect(&master)?;
     let g_o = DepGraph::collect(&other)?;
 
-    let compare_lock = args.lock && !args.no_lock;
+    let compare_lock = !args.no_lock;
     let lock_m = if compare_lock {
         find_primary_lock(&master).and_then(|p| LockIndex::load(&p).ok())
     } else {
@@ -223,7 +219,12 @@ pub fn run_args(args: DepDriftArgs) -> Result<()> {
 
     // Lockfile exact version drift
     if let (Some(lm), Some(lo)) = (&lock_m, &lock_o) {
-        let lock_names: BTreeSet<_> = lm.versions.keys().chain(lo.versions.keys()).cloned().collect();
+        let lock_names: BTreeSet<_> = lm
+            .versions
+            .keys()
+            .chain(lo.versions.keys())
+            .cloned()
+            .collect();
         for name in lock_names {
             if ignore.contains(&name) {
                 continue;
@@ -279,7 +280,9 @@ pub fn run_args(args: DepDriftArgs) -> Result<()> {
 }
 
 fn only_path(g: &DepGraph, name: &str) -> bool {
-    g.deps.get(name).is_some_and(|s| s.iter().all(|r| r.is_path()))
+    g.deps
+        .get(name)
+        .is_some_and(|s| s.iter().all(|r| r.is_path()))
 }
 
 fn filter_keys(g: &DepGraph, name: &str, include_path: bool) -> BTreeSet<String> {
@@ -301,15 +304,25 @@ fn print_human(
     lock_o: Option<&LockIndex>,
 ) {
     println!("dep-drift");
-    println!("  master: {} ({} manifests, {} workspace pins)", r.master, r.master_manifests, r.master_workspace_pins);
-    println!("  other:  {} ({} manifests, {} workspace pins)", r.other, r.other_manifests, r.other_workspace_pins);
+    println!(
+        "  master: {} ({} manifests, {} workspace pins)",
+        r.master, r.master_manifests, r.master_workspace_pins
+    );
+    println!(
+        "  other:  {} ({} manifests, {} workspace pins)",
+        r.other, r.other_manifests, r.other_workspace_pins
+    );
     if r.lock_compared {
         println!(
             "  lock:   {}  vs  {}",
-            lock_m.map(|l| l.path.display().to_string()).unwrap_or_default(),
-            lock_o.map(|l| l.path.display().to_string()).unwrap_or_default()
+            lock_m
+                .map(|l| l.path.display().to_string())
+                .unwrap_or_default(),
+            lock_o
+                .map(|l| l.path.display().to_string())
+                .unwrap_or_default()
         );
-    } else if args.lock && !args.no_lock {
+    } else if !args.no_lock {
         println!("  lock:   (skipped — need Cargo.lock on both sides)");
     } else {
         println!("  lock:   (disabled)");
@@ -327,7 +340,10 @@ fn print_human(
     }
 
     if !r.lock_drift.is_empty() {
-        println!("lockfile exact-version drift ({} direct-dep crates):", r.lock_drift.len());
+        println!(
+            "lockfile exact-version drift ({} direct-dep crates):",
+            r.lock_drift.len()
+        );
         for d in &r.lock_drift {
             println!(
                 "  {}: master={:?} other={:?}",
@@ -399,10 +415,6 @@ fn truncate_list(items: &[String], max: usize) -> String {
     if items.len() <= max {
         items.join(", ")
     } else {
-        format!(
-            "{} … +{} more",
-            items[..max].join(", "),
-            items.len() - max
-        )
+        format!("{} … +{} more", items[..max].join(", "), items.len() - max)
     }
 }

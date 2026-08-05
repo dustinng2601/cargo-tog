@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use anyhow::{bail, Result};
 
 use cargo_tog::cargo_toml::{
@@ -38,11 +36,7 @@ pub fn run(root: &str) -> Result<()> {
         if m.is_workspace && !m.members.is_empty() {
             root_members = m.members.clone();
             let rel = path.strip_prefix(&root).unwrap_or(path);
-            println!(
-                "[workspace] {} members={}",
-                rel.display(),
-                m.members.len()
-            );
+            println!("[workspace] {} members={}", rel.display(), m.members.len());
         }
     }
 
@@ -71,6 +65,5 @@ pub fn run(root: &str) -> Result<()> {
         }
     }
 
-    let _ = Path::new(".");
     Ok(())
 }

@@ -47,8 +47,8 @@ pub fn run() -> Result<()> {
     println!("wrapper_bin_name: {}", rustc_wrapper_bin_name());
     println!("CARGO_HOME: {}", default_cargo_home_display());
 
-    let target = env::var("CARGO_TARGET_DIR")
-        .unwrap_or_else(|_| "(unset — per-project ./target)".into());
+    let target =
+        env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "(unset — per-project ./target)".into());
     println!("CARGO_TARGET_DIR: {target}");
 
     let cache_dir = default_object_cache_dir();
@@ -78,17 +78,13 @@ pub fn run() -> Result<()> {
     println!("  See docs/MODES.md");
 
     if env::var_os("CARGO_TARGET_DIR").is_some() {
-        println!(
-            "\nwarn: CARGO_TARGET_DIR is set. Use only for one workspace checkout."
-        );
+        println!("\nwarn: CARGO_TARGET_DIR is set. Use only for one workspace checkout.");
     }
 
     if mode.uses_compiler_engine() {
         let wrapper_ok = wrapper.contains("cargo-tog-rustc");
         if !wrapper_ok && find_engine().is_some() {
-            println!(
-                "\nhint: set RUSTC_WRAPPER=cargo-tog-rustc (cargo install --path .)"
-            );
+            println!("\nhint: set RUSTC_WRAPPER=cargo-tog-rustc (cargo install --path .)");
         }
     }
 

@@ -9,7 +9,5 @@ pub mod platform;
 
 // Command modules stay binary-only; paths re-export platform helpers for cmds.
 pub mod paths {
-    pub use crate::platform::{
-        expand_user, home_dir, resolve_path, resolve_relative_to,
-    };
+    pub use crate::platform::{expand_user, home_dir, resolve_path, resolve_relative_to};
 }
