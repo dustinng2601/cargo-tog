@@ -2,25 +2,22 @@
 
 ## 0.1.0
 
+### Cross-OS
+
+- Native **`cargo-tog-rustc`** for macOS / Linux / Windows (not bash)
+- Platform cache dirs: macOS `Library/Caches`, Linux XDG, Windows `LOCALAPPDATA`
+- `cargo-tog host-key` — OS/arch/triple + suggested CI keys
+- Deep reference: `docs/CROSS_OS.md`
+- Self CI matrix: `ubuntu-22.04`, `macos-14`, `windows-2022`
+- Action installs native wrapper when used from this repo
+
 ### Core
 
-- **Rust CLI** (`cargo-tog` binary): doctor, cache-plan, inventory, dep-drift,
-  lock-fingerprint  
-- Composite GitHub Action: compiler cache + registry cache, no `target/` upload  
-- Public wrapper `cargo-tog-rustc` and `CARGO_TOG_*` configuration surface  
-- Remote object store via bucket secrets; GitHub-hosted fallback when unset  
-- CI defaults: `CARGO_INCREMENTAL=0`, slim debuginfo  
-- Optional `install-nextest` (same compiler cache)  
-
-### Advanced (non-core)
-
-- Optional partial file `sync` — documented as advanced only  
+- Rust CLI: doctor, cache-plan, inventory, dep-drift, lock-fingerprint, host-key
+- Composite Action: `CARGO_TOG_*` secrets, registry cache, optional nextest
+- Multi-repo remote objects **within** each target triple
+- Advanced optional `sync` (not required for cache)
 
 ### Docs
 
-- RESEARCH, PRODUCTION, layered architecture, enterprise runbook  
-
-### Notes
-
-- Node `scripts/cargo-tog.mjs` is a thin shim that execs the Rust binary only.  
-
+- RESEARCH, PRODUCTION, CROSS_OS, SECURITY, architecture
