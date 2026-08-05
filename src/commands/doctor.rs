@@ -76,10 +76,3 @@ fn print_cmd_version(bin: &str, args: &[&str]) {
         _ => println!("{bin}: NOT FOUND"),
     }
 }
-
-#[allow(dead_code)]
-fn default_cache_dir() -> PathBuf {
-    home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".cache/cargo-tog")
-}
