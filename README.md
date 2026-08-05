@@ -1,113 +1,86 @@
 # cargo-tog
 
-**Cargo, together.** Coordinate Rust **build caches**, **target dirs**, and
-**dependency pins** across monorepos, polyrepos, and multi-project machines.
-
-Not “one shared `/target` for every repo.” That usually hurts. This is:
-
-- what is **safe to share** (downloads, compiler objects)
-- what must stay **isolated** (per-workspace `target/`)
-- small tools + a composite GitHub Action so CI and laptops stop re-downloading
-  and recompiling the same crates over and over
-
-Works for **any** Rust org or personal multi-repo setup — not tied to one product.
-
-## Share matrix
-
-| Layer | Share across repos? | Notes |
-|-------|---------------------|--------|
-| **crates.io / git cache** (`CARGO_HOME`) | **Yes** | Safe. Easy win on laptops + self-hosted runners. |
-| **sccache** | **Yes (remote S3/R2/GCS)** | Best cross-repo / cross-job compile reuse. |
-| **GHA sccache / rust-cache** | Per repo by default | Fine baseline; remote sccache is the real multi-repo win. |
-| **Full `target/`** | **Usually no** | Different graphs/features thrash or break a shared dir. |
-| **cargo-chef** | Per Docker image | One dependency graph per image, not org-wide. |
-| **workspace dependency pins** | Policy + drift checks | One “master” tree owns versions; others follow or fail CI. |
-
-Details: [docs/LAYERS.md](docs/LAYERS.md) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-
-## What’s here
+**Cargo, together.** Multi-repo Rust **build cache** coordination, plus optional
+**partial code mirrors** — under **your** names, for any org or laptop.
 
 ```text
-docs/           design: layers, architecture, GHA, local
-config/         example cargo-tog.toml + env
-action/         composite Action: sccache + registry cache (no target/ upload)
-scripts/        doctor, cache-plan, inventory, dep-drift, lock-fingerprint
-examples/ci/    drop-in workflow fragments
+cargo-tog cache   →  reuse crate downloads + compiler objects (CI + local)
+cargo-tog sync    →  optional: keep listed files identical across repos
 ```
 
-`cargo test`, `cargo nextest`, `cargo bench`, and `cargo build` all go through
-`rustc` — with `RUSTC_WRAPPER=sccache` they **reuse the same object cache**.
-Nextest does not need a special protocol; optional install is supported in the
-Action if you want one less step in your workflow.
+Caching does **not** require code sync. Code sync is only for partial mirrors.
 
-## Quick start (local)
+## Public names (ours)
+
+| You say / set | Meaning |
+|---------------|---------|
+| **cargo-tog** | This project + CLI + CI Action |
+| **compiler cache** | Object-level compile reuse across jobs/repos |
+| **registry cache** | crates.io / git download reuse |
+| **`CARGO_TOG_BUCKET`** etc. | Your secrets for remote object storage |
+| **`cargo-tog-rustc`** | Wrapper set as `RUSTC_WRAPPER` in CI |
+
+You do **not** configure day-to-day life in terms of other tools’ product names.
+Engines under the hood are an implementation detail of the Action.
+
+## Share matrix (cache)
+
+| Layer | Share across repos? |
+|-------|---------------------|
+| Registry / git downloads | **Yes** |
+| Compiler objects (remote bucket) | **Yes** |
+| Full `target/` directory | **No** (per workspace only) |
+
+## Multi-repo code sync — need it?
+
+| | |
+|--|--|
+| **Need it for cache?** | **No** |
+| **Need it if each repo is independent?** | **No** |
+| **Need it if you copy the same sources into split git repos?** | **Optional helper** — see [docs/SYNC.md](docs/SYNC.md) |
+
+If you only want faster builds: **cache only**.
+
+## Quick start
 
 ```sh
 node scripts/cargo-tog.mjs doctor
 node scripts/cargo-tog.mjs cache-plan
-node scripts/cargo-tog.mjs inventory --root /path/to/your/workspace
-node scripts/cargo-tog.mjs dep-drift --master /path/to/main --other /path/to/split
+node scripts/cargo-tog.mjs inventory --root /path/to/workspace
+node scripts/cargo-tog.mjs sync --config cargo-tog.toml --check   # optional mirrors
 ```
 
-```sh
-# recommended laptop env (see config/env.local.example)
-export RUSTC_WRAPPER=sccache
-export SCCACHE_DIR="$HOME/.cache/sccache"
-# one CARGO_HOME for all clones; do NOT one CARGO_TARGET_DIR for all projects
-```
-
-## Quick start (GitHub Actions)
+### CI
 
 ```yaml
 env:
-  # Optional remote sccache — leave secrets empty to use GHA backend
-  SCCACHE_BUCKET: ${{ secrets.SCCACHE_BUCKET }}
-  SCCACHE_ENDPOINT: ${{ secrets.SCCACHE_ENDPOINT }}
-  SCCACHE_REGION: ${{ secrets.SCCACHE_REGION }}
-  AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+  CARGO_TOG_BUCKET: ${{ secrets.CARGO_TOG_BUCKET }}
+  CARGO_TOG_ENDPOINT: ${{ secrets.CARGO_TOG_ENDPOINT }}
+  CARGO_TOG_REGION: ${{ secrets.CARGO_TOG_REGION }}
+  CARGO_TOG_ACCESS_KEY_ID: ${{ secrets.CARGO_TOG_ACCESS_KEY_ID }}
+  CARGO_TOG_SECRET_ACCESS_KEY: ${{ secrets.CARGO_TOG_SECRET_ACCESS_KEY }}
 
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: your-org/cargo-tog/action@main   # or copy action/ into the repo
-        with:
-          key: test-${{ runner.os }}-${{ runner.arch }}
-          # install-nextest: "true"   # optional; same sccache as cargo test
-      - run: cargo nextest run --workspace
-        # or: cargo test --workspace
+steps:
+  - uses: actions/checkout@v4
+  - uses: dtolnay/rust-toolchain@stable
+  - uses: your-org/cargo-tog/action@main
+    with:
+      key: test-${{ runner.os }}-${{ runner.arch }}
+      install-nextest: "true"   # optional; same compiler cache
+  - run: cargo nextest run --workspace
 ```
 
-When `SCCACHE_BUCKET` is set, jobs across **different repos** on the same
-OS/target/rustc share compile objects. When unset, behavior falls back to the
-GitHub Actions sccache backend (no config required to start).
+Empty bucket secrets → GitHub-hosted object cache (still fine per repo).  
+Set the bucket once at **org** level → multi-repo compile reuse.
 
-## Design rules
+## Docs
 
-1. **Share downloads + sccache objects.**  
-2. **Never casually share `target/` across workspaces.**  
-3. **Turn off GH upload of `target/`** if you use sccache (`cache-targets: false`).  
-4. **Pin dependency versions in one place**; drift-check the rest.  
-5. **CI: prefer `CARGO_INCREMENTAL=0`** so sccache (not incremental) owns reuse.
-
-## Commands
-
-| Command | Purpose |
-|---------|---------|
-| `doctor` | cargo / rustc / sccache / env sanity |
-| `cache-plan` | what to share vs not |
-| `inventory` | packages + deps under a tree |
-| `dep-drift` | version mismatches between two trees |
-| `lock-fingerprint` | hashes for cache keys |
-
-## Status
-
-Docs + scripts + composite Action. Not a hosted cache service — bring your own
-R2/S3 bucket when you want org-wide hits.
+- [docs/LAYERS.md](docs/LAYERS.md) — what to share  
+- [docs/SYNC.md](docs/SYNC.md) — code mirrors (optional)  
+- [docs/GITHUB_ACTIONS.md](docs/GITHUB_ACTIONS.md)  
+- [docs/LOCAL_DEV.md](docs/LOCAL_DEV.md)  
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)  
 
 ## License
 
-MIT (see `LICENSE-MIT`).
+MIT (`LICENSE-MIT`).

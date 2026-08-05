@@ -14,11 +14,11 @@ import {
   existsSync,
   readFileSync,
   readdirSync,
-  statSync,
-  realpathSync,
+  copyFileSync,
+  mkdirSync,
 } from "node:fs";
-import { join, relative, resolve } from "node:path";
-import { execFileSync, spawnSync } from "node:child_process";
+import { join, relative, resolve, dirname } from "node:path";
+import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 
 const args = process.argv.slice(2);
@@ -146,7 +146,7 @@ function resolvePackageVersion(parsed, workspacePackageVersion) {
 }
 
 function cmdHelp() {
-  console.log(`cargo-tog — coordinate Cargo caches & deps across polyrepos
+  console.log(`cargo-tog — multi-repo Cargo cache (+ optional code mirrors)
 
 Usage:
   cargo-tog doctor
@@ -154,8 +154,11 @@ Usage:
   cargo-tog inventory --root <path>
   cargo-tog dep-drift --master <path> --other <path>
   cargo-tog lock-fingerprint --root <path>
+  cargo-tog sync --config <cargo-tog.toml> --check
+  cargo-tog sync --config <cargo-tog.toml> --apply
 
-See README.md and docs/LAYERS.md.`);
+Cache does not need code sync. Sync is optional for partial mirrors.
+See README.md, docs/LAYERS.md, docs/SYNC.md.`);
 }
 
 function cmdDoctor() {
@@ -164,55 +167,171 @@ function cmdDoctor() {
   console.log(cargo.status === 0 ? `cargo: ${cargo.stdout.trim()}` : "cargo: NOT FOUND");
   const rustc = spawnSync("rustc", ["--version"], { encoding: "utf8" });
   console.log(rustc.status === 0 ? `rustc: ${rustc.stdout.trim()}` : "rustc: NOT FOUND");
-  const sc = spawnSync("sccache", ["--version"], { encoding: "utf8" });
-  console.log(sc.status === 0 ? `sccache: ${sc.stdout.trim()}` : "sccache: not installed (optional but recommended)");
+
+  const engine = spawnSync("sccache", ["--version"], { encoding: "utf8" });
+  console.log(
+    engine.status === 0
+      ? `compiler-cache engine: installed (${engine.stdout.trim().split("\n")[0]})`
+      : "compiler-cache engine: not installed (cargo-tog-rustc falls back to rustc)",
+  );
 
   const wrapper = process.env.RUSTC_WRAPPER || "(unset)";
   console.log(`RUSTC_WRAPPER: ${wrapper}`);
   console.log(`CARGO_HOME: ${process.env.CARGO_HOME || join(homedir(), ".cargo") + " (default)"}`);
   console.log(`CARGO_TARGET_DIR: ${process.env.CARGO_TARGET_DIR || "(unset — per-project ./target)"}`);
-  console.log(`SCCACHE_DIR: ${process.env.SCCACHE_DIR || "(sccache default)"}`);
-  console.log(`SCCACHE_BUCKET: ${process.env.SCCACHE_BUCKET || "(unset — no remote)"}`);
+  console.log(
+    `CARGO_TOG_CACHE_DIR: ${process.env.CARGO_TOG_CACHE_DIR || join(homedir(), ".cache/cargo-tog") + " (default)"}`,
+  );
+  console.log(`CARGO_TOG_BUCKET: ${process.env.CARGO_TOG_BUCKET || "(unset — local/GHA object cache only)"}`);
 
   if (process.env.CARGO_TARGET_DIR) {
     console.log(
-      "\nwarn: CARGO_TARGET_DIR is set globally. Use only for one workspace checkout, not all polyrepos.",
+      "\nwarn: CARGO_TARGET_DIR is set. Use only for one workspace checkout, not every project.",
     );
   }
-  if (wrapper !== "sccache" && sc.status === 0) {
-    console.log("\nhint: sccache is installed but RUSTC_WRAPPER is not sccache.");
+  if (wrapper !== "cargo-tog-rustc" && engine.status === 0) {
+    console.log("\nhint: set RUSTC_WRAPPER=cargo-tog-rustc (scripts/ on PATH).");
   }
-  console.log("\nShare: CARGO_HOME + sccache. Do not share target/ across different workspaces.");
+  console.log("\nShare: registry + cargo-tog compiler cache. Not target/ across workspaces.");
+  console.log("Code sync: optional — only if you maintain partial mirrors (docs/SYNC.md).");
 }
 
 function cmdCachePlan() {
   console.log(`# cargo-tog cache plan
 #
-# SHARE (any multi-project / polyrepo setup)
-# -----------------------------------------
-# 1. CARGO_HOME registry + git          (downloads)
-# 2. sccache + remote S3/R2 when ready  (compiler objects across repos)
-# 3. Optional: one tree owns dependency pins; dep-drift the rest
+# SHARE
+# -----
+# 1. CARGO_HOME registry + git
+# 2. Compiler objects via cargo-tog (remote CARGO_TOG_BUCKET for multi-repo)
+# 3. Optional dep pins + dep-drift
 #
 # DO NOT SHARE
 # ------------
 # 1. One CARGO_TARGET_DIR for unrelated workspaces
-# 2. Full target/ upload to GitHub Actions when using sccache
-# 3. cargo-chef layers across different apps (Docker only)
+# 2. Full target/ upload to GitHub Actions
+#
+# CODE SYNC
+# ---------
+# Not required for cache. Use only for partial file mirrors:
+#   cargo-tog sync --config cargo-tog.toml --check
+# See docs/SYNC.md
 #
 # Laptop
 # ------
-export RUSTC_WRAPPER=sccache
-export SCCACHE_DIR="$HOME/.cache/sccache"
-# export CARGO_HOME="$HOME/.cargo"
+export PATH=".../cargo-tog/scripts:$PATH"
+export RUSTC_WRAPPER=cargo-tog-rustc
+export CARGO_TOG_CACHE_DIR="$HOME/.cache/cargo-tog"
 #
 # CI
 # --
-# - cargo-tog Action OR sccache-action + rust-cache (cache-targets: false)
-# - CARGO_PROFILE_DEV_DEBUG=0  CARGO_INCREMENTAL=0
-# - cargo test / cargo nextest / cargo bench all hit the same sccache
-# - set SCCACHE_BUCKET (+ endpoint/keys) for org-wide reuse
+# secrets: CARGO_TOG_BUCKET, CARGO_TOG_ENDPOINT, CARGO_TOG_REGION,
+#          CARGO_TOG_ACCESS_KEY_ID, CARGO_TOG_SECRET_ACCESS_KEY
+# Action sets cargo-tog-rustc; cargo test / nextest / bench all reuse objects.
 `);
+}
+
+/** Minimal TOML table scrape for [[sync.mirrors]] blocks. */
+function parseSyncConfig(text) {
+  const mirrors = [];
+  let cur = null;
+  let inFiles = false;
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/#.*$/, "").trim();
+    if (!line) continue;
+    if (line === "[[sync.mirrors]]") {
+      if (cur) mirrors.push(cur);
+      cur = { name: "", source_root: "", target_root: "", files: [] };
+      inFiles = false;
+      continue;
+    }
+    if (!cur) continue;
+    if (line.startsWith("[")) {
+      mirrors.push(cur);
+      cur = null;
+      inFiles = false;
+      continue;
+    }
+    const kv = line.match(/^([a-z_]+)\s*=\s*"([^"]*)"/);
+    if (kv && !inFiles) {
+      cur[kv[1]] = kv[2];
+      continue;
+    }
+    if (/^files\s*=/.test(line)) inFiles = true;
+    if (inFiles) {
+      const pair = line.match(/\[\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\]/);
+      if (pair) cur.files.push([pair[1], pair[2]]);
+      if (line.includes("]") && !pair && !/^files\s*=\s*\[/.test(line)) {
+        // end of multi-line array when we see a lone ]
+      }
+      if (line === "]") inFiles = false;
+    }
+  }
+  if (cur) mirrors.push(cur);
+  return mirrors.filter((m) => m.source_root && m.target_root);
+}
+
+function cmdSync() {
+  const configPath = resolve(expandHome(flag("--config") || "cargo-tog.toml"));
+  const check = has("--check") || !has("--apply");
+  const apply = has("--apply");
+  if (!existsSync(configPath)) {
+    console.error(`config not found: ${configPath}`);
+    console.error("Code sync is optional. Copy config/cargo-tog.example.toml or see docs/SYNC.md.");
+    console.error("You do NOT need sync for compiler/registry caching.");
+    process.exit(1);
+  }
+  const mirrors = parseSyncConfig(readFileSync(configPath, "utf8"));
+  if (mirrors.length === 0) {
+    console.log("no [[sync.mirrors]] entries — nothing to do (cache does not need sync).");
+    return;
+  }
+
+  let drifted = 0;
+  let copied = 0;
+  for (const mirror of mirrors) {
+    const srcRoot = resolve(dirname(configPath), expandHome(mirror.source_root));
+    const dstRoot = resolve(dirname(configPath), expandHome(mirror.target_root));
+    console.log(`mirror ${mirror.name || "(unnamed)"}`);
+    console.log(`  source: ${srcRoot}`);
+    console.log(`  target: ${dstRoot}`);
+    for (const [from, to] of mirror.files) {
+      const s = join(srcRoot, from);
+      const d = join(dstRoot, to);
+      if (!existsSync(s)) {
+        console.log(`  MISSING source ${from}`);
+        drifted += 1;
+        continue;
+      }
+      if (!existsSync(d)) {
+        console.log(`  missing target ${to}`);
+        drifted += 1;
+        if (apply) {
+          mkdirSync(dirname(d), { recursive: true });
+          copyFileSync(s, d);
+          copied += 1;
+          console.log(`  copied → ${to}`);
+        }
+        continue;
+      }
+      const sh = createHash("sha256").update(readFileSync(s)).digest("hex");
+      const dh = createHash("sha256").update(readFileSync(d)).digest("hex");
+      if (sh === dh) {
+        console.log(`  ok  ${from} → ${to}`);
+      } else {
+        console.log(`  DIFF ${from} → ${to}`);
+        drifted += 1;
+        if (apply) {
+          copyFileSync(s, d);
+          copied += 1;
+          console.log(`  copied → ${to}`);
+        }
+      }
+    }
+  }
+  if (apply) console.log(`\napplied ${copied} file(s); commit/push in the target repo yourself.`);
+  else if (drifted) console.log(`\n${drifted} path(s) drifted. Re-run with --apply to copy.`);
+  else console.log("\nall listed files in sync.");
+  if (check && !apply && drifted) process.exit(1);
 }
 
 function cmdInventory() {
@@ -344,6 +463,9 @@ switch (cmd) {
     break;
   case "lock-fingerprint":
     cmdLockFingerprint();
+    break;
+  case "sync":
+    cmdSync();
     break;
   case "help":
   case "-h":

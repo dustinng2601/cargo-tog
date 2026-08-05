@@ -1,60 +1,28 @@
 # Architecture
 
-## Problem
+## Two independent features
 
-People run Cargo in many places:
+| Feature | Purpose | Required? |
+|---------|---------|-----------|
+| **Cache** | Reuse downloads + compiler objects | Core product |
+| **Sync** | Keep listed files identical across trees | Optional |
 
-- one large monorepo  
-- several split repos that share crates/versions  
-- unrelated projects on the same laptop or org runners  
+Caching **never** depends on sync. Sync **never** replaces a compiler cache.
 
-Each CI job re-fetches crates and recompiles overlapping pure-Rust dependencies.
-“Share `/target`” is the wrong first idea.
+## Cache
 
-## Goals
+1. Registry/git under `CARGO_HOME`  
+2. Compiler objects via remote bucket (`CARGO_TOG_*`) or GitHub-hosted fallback  
+3. Public wrapper name: **`cargo-tog-rustc`**  
+4. No shared `target/` across workspaces  
 
-1. Correctness first — no shared state that corrupts builds.  
-2. Share **downloads** and **compiler objects** where keys are content-addressed.  
-3. Optional **dependency drift** checks when you maintain related trees.  
-4. Stay within CI cache budgets (full `target/` is huge).  
-5. Same mental model locally and in CI.
+## Sync (optional)
+
+Config-driven partial file mirrors (`[[sync.mirrors]]`). Local copy only;
+you commit/push. Use only when the same source must live in two git repos.
 
 ## Non-goals
 
-- One Cargo workspace spanning every repo in an org.  
-- Replacing product-specific release pipelines.  
-- Requiring any particular company or product naming.
-
-## Components
-
-| Piece | Role |
-|-------|------|
-| Docs | Policy: what to share |
-| `scripts/cargo-tog.mjs` | Inventory, drift, fingerprints, doctor |
-| `action/` | CI: sccache + registry cache; optional nextest install |
-| Example YAML | Copy/paste for any GitHub repo |
-
-## Cache key design
-
-**Registry (rust-cache):** keyed by lockfile + OS — per repo is fine.  
-
-**sccache remote:** content-addressed inside sccache — **no GH key needed**; this
-is the multi-repo compile share.
-
-**target/:** do not upload to GH Actions when sccache is enabled.
-
-## Decision record
-
-| Decision | Choice |
-|----------|--------|
-| Shared `target/` across repos | No (default) |
-| Shared sccache remote | Yes when bucket configured |
-| Shared `CARGO_HOME` on runners | Yes |
-| nextest-specific cache protocol | No — use same sccache as cargo |
-| cargo-chef for all CI | No — Docker graphs only |
-
-## Roadmap
-
-1. Docs + scripts + Action (now).  
-2. Point CI at a shared R2/S3 bucket when ready.  
-3. Optional pin-sync bot later.
+- One mega-workspace for every repo  
+- Auto force-push to many remotes  
+- Product-specific branding  

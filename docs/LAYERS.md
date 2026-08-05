@@ -1,76 +1,32 @@
-# Cache and build layers
+# Cache layers (cargo-tog)
 
-What “sharing” means for multi-repo Rust work (monorepo, polyrepo, or several
-unrelated projects on one machine).
+## 1. Registry cache — share freely
 
-## 1. Download cache — **share freely**
+`CARGO_HOME` downloads (crates.io + git). Safe across all projects on a machine
+or runner.
 
-Under `CARGO_HOME` (default `~/.cargo`):
+## 2. Compiler cache — share with a remote bucket
 
-- `registry/index`, `registry/cache` — crates.io  
-- `git/db`, `git/checkouts` — git dependencies  
+cargo-tog’s **compiler cache** stores object-level compile results. With a
+remote bucket (`CARGO_TOG_BUCKET` + credentials), jobs in **different repos**
+can hit the same objects (same rustc, target, similar flags).
 
-**Safe across all projects.** Same crate version = same bytes.
+| Mode | When |
+|------|------|
+| GitHub-hosted | Bucket secrets empty |
+| Remote (S3-compatible / R2) | `CARGO_TOG_BUCKET` set |
 
-| Environment | How |
-|-------------|-----|
-| Laptop | One user `CARGO_HOME` (default). |
-| CI | rust-cache (registry/git) or persistent runner disk. |
-| Self-hosted | Keep `CARGO_HOME` on the runner between jobs. |
+Applies to `cargo test`, `cargo nextest`, `cargo build`, `cargo bench`.
 
-## 2. Compiler cache (sccache) — **share with a remote backend**
+CI tip: `CARGO_INCREMENTAL=0` so reuse comes from the compiler cache, not
+throwaway incremental dirs on the runner.
 
-`RUSTC_WRAPPER=sccache` stores **object-level** results keyed by compiler,
-flags, and inputs.
+## 3. `target/` — do not casually share
 
-| Backend | Cross-repo? | Notes |
-|---------|-------------|--------|
-| Local disk | Same machine | Laptop / one runner. |
-| GitHub Actions | Mostly per-repo | Easy default. |
-| S3 / R2 / GCS / Redis | **Yes** | Real multi-repo / multi-workflow reuse. |
+One `target/` (or `CARGO_TARGET_DIR`) **per workspace**. Not across unrelated
+repos.
 
-Hits need roughly the same rustc, target triple, and similar `RUSTFLAGS` /
-profile. Different features correctly miss.
+## 4. Code sync — separate product surface
 
-Works with **`cargo test`**, **`cargo nextest`**, **`cargo build`**,
-**`cargo bench`** — anything that invokes `rustc` through Cargo.
-
-### CI tip
-
-Set `CARGO_INCREMENTAL=0` in CI so reuse comes from sccache, not per-job
-incremental directories that never leave the runner.
-
-## 3. `target/` / `CARGO_TARGET_DIR` — **do not casually share**
-
-OK: one workspace, many crates (Cargo’s normal single `target/`).  
-Bad: several unrelated workspaces writing one shared `target/` → thrash or
-fingerprint bugs.
-
-**Rule:** one `target/` (or `CARGO_TARGET_DIR`) **per workspace checkout**.
-
-## 4. cargo-chef — **Docker only**
-
-Optimizes **image layers** for one app graph. Complements sccache; does not
-replace org-wide object caches.
-
-## 5. Dependency pins
-
-If you have a “main” workspace and thinner split repos:
-
-- main owns `[workspace.dependencies]` + lockfile  
-- splits path/git depend or copy pins  
-- `cargo-tog dep-drift` catches divergence  
-
-Optional — single-repo users can ignore drift entirely.
-
-## Summary
-
-```text
-     remote sccache (S3/R2)     ← compile objects (multi-repo)
-              ▲
-     repo A / repo B / laptop
-              │
-         own target/ each
-              │
-     shared CARGO_HOME          ← downloads
-```
+Keeping file **bytes** identical across git repos is **not** a cache feature.
+See [SYNC.md](SYNC.md). Optional; not required for any cache mode.

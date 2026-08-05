@@ -1,83 +1,119 @@
 name: cargo-tog
 description: >
-  sccache + Cargo registry/git cache without uploading target/.
-  Uses remote S3/R2 sccache when SCCACHE_BUCKET is set; otherwise GHA backend.
-  Works with cargo test, cargo nextest, cargo build, cargo bench.
+  cargo-tog CI setup — shared compiler object cache + Cargo registry/git cache,
+  without uploading target/. Optional cargo-nextest install.
+  Works with cargo test, nextest, build, and bench.
 
 author: cargo-tog
 
 inputs:
   key:
-    description: rust-cache key (include runner.os / arch / target / profile)
+    description: Registry cache key (include runner.os / arch / target / profile)
     required: false
     default: ""
   shared-key:
-    description: Optional rust-cache shared-key (job matrix suffix)
+    description: Optional extra registry cache key suffix
     required: false
     default: ""
   workspaces:
-    description: rust-cache workspaces parameter
+    description: Workspace roots for registry cache layout
     required: false
     default: ". -> target"
-  sccache:
-    description: Install sccache and set RUSTC_WRAPPER
+  compiler-cache:
+    description: Enable cargo-tog compiler object cache (recommended)
     required: false
     default: "true"
-  rust-cache:
-    description: Cache Cargo registry and git (not target/)
+  registry-cache:
+    description: Cache crates.io / git downloads (not target/)
     required: false
     default: "true"
   cache-targets:
-    description: Upload target/ to GH cache (keep false when using sccache)
+    description: Upload target/ to GitHub cache (keep false with compiler-cache)
     required: false
     default: "false"
   install-nextest:
-    description: Install cargo-nextest via taiki-e/install-action (optional)
+    description: Install cargo-nextest (uses the same compiler cache)
     required: false
     default: "false"
   incremental:
-    description: Set CARGO_INCREMENTAL (0 recommended in CI for better sccache reuse)
+    description: CARGO_INCREMENTAL (0 recommended in CI)
     required: false
     default: "0"
 
 runs:
   using: composite
   steps:
-    - name: Cargo / sccache environment
+    - name: cargo-tog environment
       shell: bash
       run: |
         set -euo pipefail
         echo "CARGO_TERM_COLOR=always" >> "$GITHUB_ENV"
-        # Smaller artifacts; CI rarely needs full debuginfo.
         echo "CARGO_PROFILE_DEV_DEBUG=0" >> "$GITHUB_ENV"
         echo "CARGO_INCREMENTAL=${{ inputs.incremental }}" >> "$GITHUB_ENV"
 
-        if [ "${{ inputs.sccache }}" != "true" ]; then
-          echo "cargo-tog: sccache disabled"
+        # Prefer cargo-tog secret names; accept legacy SCCACHE_* if present.
+        bucket="${CARGO_TOG_BUCKET:-${SCCACHE_BUCKET:-}}"
+        endpoint="${CARGO_TOG_ENDPOINT:-${SCCACHE_ENDPOINT:-}}"
+        region="${CARGO_TOG_REGION:-${SCCACHE_REGION:-}}"
+        key_id="${CARGO_TOG_ACCESS_KEY_ID:-${AWS_ACCESS_KEY_ID:-}}"
+        secret="${CARGO_TOG_SECRET_ACCESS_KEY:-${AWS_SECRET_ACCESS_KEY:-}}"
+
+        if [ -n "$bucket" ]; then
+          echo "SCCACHE_BUCKET=$bucket" >> "$GITHUB_ENV"
+        fi
+        if [ -n "$endpoint" ]; then
+          echo "SCCACHE_ENDPOINT=$endpoint" >> "$GITHUB_ENV"
+        fi
+        if [ -n "$region" ]; then
+          echo "SCCACHE_REGION=$region" >> "$GITHUB_ENV"
+        elif [ -n "$bucket" ]; then
+          echo "SCCACHE_REGION=auto" >> "$GITHUB_ENV"
+        fi
+        if [ -n "$key_id" ]; then
+          echo "AWS_ACCESS_KEY_ID=$key_id" >> "$GITHUB_ENV"
+        fi
+        if [ -n "$secret" ]; then
+          echo "AWS_SECRET_ACCESS_KEY=$secret" >> "$GITHUB_ENV"
+        fi
+
+        if [ "${{ inputs.compiler-cache }}" != "true" ]; then
+          echo "cargo-tog: compiler-cache disabled"
           exit 0
         fi
 
-        echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-
-        if [ -n "${SCCACHE_BUCKET:-}" ]; then
-          # Remote object store — multi-repo / multi-workflow hits.
-          # Do not combine with GHA backend.
+        if [ -n "$bucket" ]; then
           echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
-          if [ -z "${SCCACHE_REGION:-}" ]; then
-            echo "SCCACHE_REGION=auto" >> "$GITHUB_ENV"
-          fi
-          echo "cargo-tog: remote sccache (SCCACHE_BUCKET set)"
+          echo "cargo-tog: remote object cache (CARGO_TOG_BUCKET / bucket set)"
         else
           echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-          echo "cargo-tog: GHA sccache backend (set SCCACHE_BUCKET for shared remote cache)"
+          echo "cargo-tog: GitHub-hosted object cache (set CARGO_TOG_BUCKET for multi-repo remote)"
         fi
 
-    - name: Install sccache
-      if: inputs.sccache == 'true'
+    - name: Install compiler cache engine
+      if: inputs.compiler-cache == 'true'
       uses: mozilla-actions/sccache-action@v0.0.11
 
+    - name: Install cargo-tog rustc wrapper
+      if: inputs.compiler-cache == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Public name is cargo-tog; the installed engine binary stays private detail.
+        wrap="${RUNNER_TEMP}/cargo-tog-rustc"
+        cat > "$wrap" <<'WRAP'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        if command -v sccache >/dev/null 2>&1; then
+          exec sccache "$@"
+        fi
+        exec rustc "$@"
+        WRAP
+        chmod +x "$wrap"
+        echo "RUSTC_WRAPPER=$wrap" >> "$GITHUB_ENV"
+        echo "cargo-tog: RUSTC_WRAPPER=cargo-tog-rustc"
+
     - name: Cache Cargo registry / git
-      if: inputs.rust-cache == 'true'
+      if: inputs.registry-cache == 'true'
       uses: Swatinem/rust-cache@v2
       with:
         workspaces: ${{ inputs.workspaces }}
@@ -92,8 +128,3 @@ runs:
       with:
         tool: cargo-nextest
         fallback: none
-
-    - name: sccache stats (start)
-      if: inputs.sccache == 'true'
-      shell: bash
-      run: sccache --show-stats || true

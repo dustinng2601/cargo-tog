@@ -1,33 +1,28 @@
-# Example org / multi-project config for cargo-tog.
-# Copy to cargo-tog.toml wherever you keep tooling config.
+# Example cargo-tog config — copy to cargo-tog.toml
 
 [org]
 name = "example-org"
-# Optional: path or clone name of the workspace that owns dependency pins.
-# master = "my-monorepo"
+# Optional label for the tree that owns dependency pins
+# master = "main-workspace"
 
 [cache]
-# local | gha | s3  (s3 = any S3-compatible store including R2)
-sccache_backend = "local"
-# bucket = "my-sccache"
+# Prefer remote object storage for multi-repo CI; local disk for laptops.
+# backend hint only (docs); CI uses env secrets.
 share_target_dir = false
 
 [cache.local]
-sccache_dir = "~/.cache/sccache"
+# Used by scripts/cargo-tog-rustc when set via CARGO_TOG_CACHE_DIR
+dir = "~/.cache/cargo-tog"
 
-# Related trees for dep-drift (optional)
-# [[trees]]
-# name = "main"
-# path = "../my-monorepo"
-# kind = "master"
-#
-# [[trees]]
-# name = "service-b"
-# path = "../service-b"
-# kind = "split"
-
-[ci]
-cache_targets = false
-cache_bin = false
-profile_dev_debug = "0"
-cargo_incremental = "0"
+# ---------------------------------------------------------------------------
+# Optional CODE sync (partial mirrors). Not required for caching.
+# See docs/SYNC.md
+# ---------------------------------------------------------------------------
+# [[sync.mirrors]]
+# name = "cli-surface"
+# source_root = "../main-workspace"
+# target_root = "../cli-repo"
+# files = [
+#   ["cli/src/main.rs", "src/main.rs"],
+#   ["cli/Cargo.toml", "Cargo.toml"],
+# ]

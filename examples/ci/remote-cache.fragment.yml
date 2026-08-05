@@ -1,4 +1,4 @@
-# Drop into any Rust repo. Uses cargo-tog names only.
+# Remote multi-repo object cache via cargo-tog secrets (S3-compatible / R2).
 
 env:
   CARGO_TOG_BUCKET: ${{ secrets.CARGO_TOG_BUCKET }}
@@ -8,10 +8,8 @@ env:
   CARGO_TOG_SECRET_ACCESS_KEY: ${{ secrets.CARGO_TOG_SECRET_ACCESS_KEY }}
 
 steps:
-  - uses: actions/checkout@v4
-  - uses: dtolnay/rust-toolchain@stable
   - uses: your-org/cargo-tog/action@main
     with:
-      key: test-${{ runner.os }}-${{ runner.arch }}
-      install-nextest: "true"
-  - run: cargo nextest run --workspace
+      key: ${{ runner.os }}-${{ runner.arch }}
+      compiler-cache: "true"
+      registry-cache: "true"

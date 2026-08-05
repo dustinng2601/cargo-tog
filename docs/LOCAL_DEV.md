@@ -1,45 +1,33 @@
 # Local development
 
-## One cargo home
+## Registry
+
+One `CARGO_HOME` per user (default `~/.cargo`) for all clones.
+
+## Compiler cache
 
 ```sh
-echo "${CARGO_HOME:-$HOME/.cargo}"
+# engine binary used under the hood by cargo-tog-rustc — install once
+# (implementation detail; day-to-day you set the wrapper name below)
+cargo install sccache --locked   # or brew install sccache
+
+# our wrapper name on PATH (from this repo)
+export PATH="/path/to/cargo-tog/scripts:$PATH"
+export RUSTC_WRAPPER=cargo-tog-rustc
+export CARGO_TOG_CACHE_DIR="${CARGO_TOG_CACHE_DIR:-$HOME/.cache/cargo-tog}"
+# optional remote:
+# export CARGO_TOG_BUCKET=...
+# export CARGO_TOG_ENDPOINT=...
+# export CARGO_TOG_ACCESS_KEY_ID=...
+# export CARGO_TOG_SECRET_ACCESS_KEY=...
 ```
 
-Multiple homes mean multiple downloads of the same crates.
-
-## sccache
-
-```sh
-# macOS
-brew install sccache
-# or: cargo install sccache --locked
-
-export RUSTC_WRAPPER=sccache
-export SCCACHE_DIR="${SCCACHE_DIR:-$HOME/.cache/sccache}"
-sccache --start-server
-sccache -s
-```
-
-After building project A, building project B with the same crate versions and
-rustc should show **cache hits** in `sccache -s`.
-
-Optional: set the same S3/R2 env vars as CI to share objects with CI runners.
+`scripts/cargo-tog-rustc` maps `CARGO_TOG_*` into the engine and execs it.
 
 ## Target dirs
 
-```sh
-cd ~/code/project-a && cargo build    # ./target
-cd ~/code/project-b && cargo build    # its own ./target
-# both still use ~/.cargo + sccache
-```
+Per project checkout only. Never one global `CARGO_TARGET_DIR` for all repos.
 
-Never point unrelated workspaces at one `CARGO_TARGET_DIR`.
+## Code sync
 
-## nextest
-
-```sh
-cargo install cargo-nextest --locked
-cargo nextest run --workspace
-# uses RUSTC_WRAPPER=sccache automatically when set
-```
+Only if you maintain partial mirrors — see [SYNC.md](SYNC.md).
