@@ -2,7 +2,7 @@
   "name": "cargo-tog",
   "version": "0.1.0",
   "private": true,
-  "description": "Coordinate Cargo caches and dependency pins across a master monorepo + polyrepos",
+  "description": "Coordinate Cargo caches and dependency pins across monorepos and polyrepos",
   "type": "module",
   "bin": {
     "cargo-tog": "./scripts/cargo-tog.mjs"

@@ -1,121 +1,60 @@
-# Architecture: master monorepo + polyrepo Cargo
+# Architecture
 
 ## Problem
 
-An org like `sd2ek` has:
+People run Cargo in many places:
 
-1. **Master** product monorepo (`sd-soundseek`) — full workspace, lockfile, CI matrix.  
-2. **Polyrepos** that are partial mirrors or deploy slices (`soundseek-cli`,
-   `sd-cf-work-*`, `soundseek-plugins`, `sd-core`, …).  
-3. Each repo’s CI re-fetches crates and recompiles overlapping pure-Rust deps.  
-4. People hear “share `/target`” and “one sccache” and mix them up.
+- one large monorepo  
+- several split repos that share crates/versions  
+- unrelated projects on the same laptop or org runners  
+
+Each CI job re-fetches crates and recompiles overlapping pure-Rust dependencies.
+“Share `/target`” is the wrong first idea.
 
 ## Goals
 
-1. **Correctness first** — no shared state that corrupts builds.  
-2. **Share downloads + compiler objects** where keys are content-addressed.  
-3. **One source of dependency truth** (master) with **drift detection** on splits.  
-4. **CI cache budget** under control (GH cache is small; `target/` is huge).  
-5. **Local dev** as fast as CI: same mental model.
+1. Correctness first — no shared state that corrupts builds.  
+2. Share **downloads** and **compiler objects** where keys are content-addressed.  
+3. Optional **dependency drift** checks when you maintain related trees.  
+4. Stay within CI cache budgets (full `target/` is huge).  
+5. Same mental model locally and in CI.
 
 ## Non-goals
 
-- A single Cargo workspace spanning every private repo.  
-- Hosting a crates.io mirror (can be phase 2; not required).  
-- Replacing Tauri/desktop release pipelines.
+- One Cargo workspace spanning every repo in an org.  
+- Replacing product-specific release pipelines.  
+- Requiring any particular company or product naming.
 
 ## Components
 
-### A. Policy (docs + config)
+| Piece | Role |
+|-------|------|
+| Docs | Policy: what to share |
+| `scripts/cargo-tog.mjs` | Inventory, drift, fingerprints, doctor |
+| `action/` | CI: sccache + registry cache; optional nextest install |
+| Example YAML | Copy/paste for any GitHub repo |
 
-`config/cargo-tog.example.toml` declares:
+## Cache key design
 
-- which path is **master**
-- which **polyrepos** exist and how they relate (mirror / deploy / fork)
-- sccache backend preference
-- whether remote cache is required for CI
+**Registry (rust-cache):** keyed by lockfile + OS — per repo is fine.  
 
-### B. Observation (scripts)
+**sccache remote:** content-addressed inside sccache — **no GH key needed**; this
+is the multi-repo compile share.
 
-- `inventory` — packages and deps under a root  
-- `dep-drift` — master vs other tree version mismatches  
-- `lock-fingerprint` — stable hash for cache keys  
-- `doctor` / `cache-plan` — env sanity  
-
-### C. CI glue (composite action)
-
-`action/` sets:
-
-- `CARGO_TERM_COLOR`, optional `CARGO_PROFILE_DEV_DEBUG=0`
-- sccache install + `RUSTC_WRAPPER`
-- optional rust-cache with **targets off**
-- documents env for R2/S3 when secrets exist
-
-### D. Optional remote sccache (org secrets)
-
-```text
-SCCACHE_BUCKET=...
-SCCACHE_REGION=...
-SCCACHE_ENDPOINT=...        # R2
-AWS_ACCESS_KEY_ID=...
-AWS_SECRET_ACCESS_KEY=...
-SCCACHE_S3_KEY_PREFIX=rustc-{hash}/   # optional
-```
-
-All repos use the **same bucket**; prefix by rustc version to avoid cross-compiler
-poisoning.
-
-## Cache key design (CI)
-
-### Registry / git (Swatinem or manual)
-
-```text
-cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-```
-
-Lockfile differs per repo → different keys → OK. Still helps **within** a repo.
-
-### sccache remote
-
-Keys are **internal to sccache** (content-addressed). No GH cache key needed.
-This is why remote sccache is the only clean multi-repo compile share.
-
-### target/
-
-**Do not** put full `target/` in GH Actions cache for large workspaces if you
-already use sccache (your monorepo already disables `cache-targets`).
-
-## Dependency management model
-
-```text
-master [workspace.dependencies]
-        │
-        ├─ path members (always in lock)
-        │
-        ├─ partial mirror scripts ──► polyrepo files (source sync)
-        │
-        └─ dep-drift CI (weekly) ──► fail or open issue if split pins diverge
-```
-
-“Fast refactor”:
-
-1. Land API change in master.  
-2. Run mirror/sync for affected polyrepos.  
-3. dep-drift + each polyrepo CI.  
-4. sccache makes rebuild of unchanged crates cheap.
+**target/:** do not upload to GH Actions when sccache is enabled.
 
 ## Decision record
 
-| Decision | Choice | Why |
-|----------|--------|-----|
-| Shared `target/` across repos | **No** | Fingerprint collisions; not worth it |
-| Shared sccache remote | **Yes** | Real multi-repo compile share |
-| Shared `CARGO_HOME` on runners | **Yes** | Free download win |
-| cargo-chef default for all | **No** | Only containerized services |
-| Master owns pins | **Yes** | One lockfile truth |
+| Decision | Choice |
+|----------|--------|
+| Shared `target/` across repos | No (default) |
+| Shared sccache remote | Yes when bucket configured |
+| Shared `CARGO_HOME` on runners | Yes |
+| nextest-specific cache protocol | No — use same sccache as cargo |
+| cargo-chef for all CI | No — Docker graphs only |
 
 ## Roadmap
 
-1. **Now** — docs, scripts, composite action, example workflows.  
-2. **Next** — org R2 bucket + secrets; enable remote sccache in master + 1–2 polyrepos.  
-3. **Later** — optional `cargo-tog sync-pins` PR bot; sparse registry mirror if crates.io is slow.
+1. Docs + scripts + Action (now).  
+2. Point CI at a shared R2/S3 bucket when ready.  
+3. Optional pin-sync bot later.

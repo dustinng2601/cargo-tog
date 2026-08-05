@@ -1,60 +1,82 @@
 name: cargo-tog
 description: >
-  Sensible Cargo CI env for polyrepo orgs — sccache wrapper, optional rust-cache
-  without uploading target/, smaller debuginfo. Not a shared target/ dir.
-author: sd2ek
+  sccache + Cargo registry/git cache without uploading target/.
+  Uses remote S3/R2 sccache when SCCACHE_BUCKET is set; otherwise GHA backend.
+  Works with cargo test, cargo nextest, cargo build, cargo bench.
+
+author: cargo-tog
 
 inputs:
+  key:
+    description: rust-cache key (include runner.os / arch / target / profile)
+    required: false
+    default: ""
+  shared-key:
+    description: Optional rust-cache shared-key (job matrix suffix)
+    required: false
+    default: ""
+  workspaces:
+    description: rust-cache workspaces parameter
+    required: false
+    default: ". -> target"
   sccache:
     description: Install sccache and set RUSTC_WRAPPER
     required: false
     default: "true"
   rust-cache:
-    description: Run Swatinem/rust-cache (registry/git; targets off by default)
+    description: Cache Cargo registry and git (not target/)
     required: false
     default: "true"
-  workspaces:
-    description: rust-cache workspaces parameter
-    required: false
-    default: ". -> target"
   cache-targets:
-    description: Upload target/ to GH cache (almost always false with sccache)
+    description: Upload target/ to GH cache (keep false when using sccache)
     required: false
     default: "false"
-  shared-key:
-    description: Extra rust-cache shared-key suffix (e.g. job name)
-    required: false
-    default: ""
-  sccache-remote:
-    description: >
-      If true, expect SCCACHE_BUCKET (+ credentials) in env/secrets for S3/R2.
-      Does not enable GHA sccache backend.
+  install-nextest:
+    description: Install cargo-nextest via taiki-e/install-action (optional)
     required: false
     default: "false"
+  incremental:
+    description: Set CARGO_INCREMENTAL (0 recommended in CI for better sccache reuse)
+    required: false
+    default: "0"
 
 runs:
   using: composite
   steps:
-    - name: Cargo CI env
+    - name: Cargo / sccache environment
       shell: bash
       run: |
+        set -euo pipefail
         echo "CARGO_TERM_COLOR=always" >> "$GITHUB_ENV"
-        # Debug info dominates cache size; CI does not need full symbols.
+        # Smaller artifacts; CI rarely needs full debuginfo.
         echo "CARGO_PROFILE_DEV_DEBUG=0" >> "$GITHUB_ENV"
-        if [ "${{ inputs.sccache }}" = "true" ]; then
-          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-          if [ "${{ inputs.sccache-remote }}" = "true" ]; then
-            echo "cargo-tog: remote sccache expected (SCCACHE_BUCKET in env)"
-          else
-            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-          fi
+        echo "CARGO_INCREMENTAL=${{ inputs.incremental }}" >> "$GITHUB_ENV"
+
+        if [ "${{ inputs.sccache }}" != "true" ]; then
+          echo "cargo-tog: sccache disabled"
+          exit 0
         fi
 
-    - name: sccache
-      if: inputs.sccache == 'true'
-      uses: mozilla-actions/sccache-action@v0.0.9
+        echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
-    - name: rust-cache
+        if [ -n "${SCCACHE_BUCKET:-}" ]; then
+          # Remote object store — multi-repo / multi-workflow hits.
+          # Do not combine with GHA backend.
+          echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
+          if [ -z "${SCCACHE_REGION:-}" ]; then
+            echo "SCCACHE_REGION=auto" >> "$GITHUB_ENV"
+          fi
+          echo "cargo-tog: remote sccache (SCCACHE_BUCKET set)"
+        else
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "cargo-tog: GHA sccache backend (set SCCACHE_BUCKET for shared remote cache)"
+        fi
+
+    - name: Install sccache
+      if: inputs.sccache == 'true'
+      uses: mozilla-actions/sccache-action@v0.0.11
+
+    - name: Cache Cargo registry / git
       if: inputs.rust-cache == 'true'
       uses: Swatinem/rust-cache@v2
       with:
@@ -62,8 +84,16 @@ runs:
         cache-targets: ${{ inputs.cache-targets }}
         cache-bin: false
         shared-key: ${{ inputs.shared-key }}
+        key: ${{ inputs.key }}
 
-    - name: Remind about target/
+    - name: Install cargo-nextest
+      if: inputs.install-nextest == 'true'
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-nextest
+        fallback: none
+
+    - name: sccache stats (start)
+      if: inputs.sccache == 'true'
       shell: bash
-      run: |
-        echo "::notice::cargo-tog does not share target/ across repositories. Use sccache (ideally remote S3/R2) for cross-repo compile hits."
+      run: sccache --show-stats || true

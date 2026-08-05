@@ -57,43 +57,60 @@ function walkFiles(root, pred, acc = []) {
   return acc;
 }
 
-/** Minimal TOML string table / key extraction — good enough for Cargo.toml inventory. */
+/** Minimal TOML extraction — good enough for inventory / drift (not a full parser). */
 function parseCargoTomlRough(text) {
   const out = {
     packageName: null,
     packageVersion: null,
+    versionWorkspace: false,
     isWorkspace: false,
     members: [],
     deps: {},
     workspaceDeps: {},
+    workspacePackageVersion: null,
   };
   let section = "";
+  let inMembersArray = false;
+
   for (const rawLine of text.split("\n")) {
     const line = rawLine.replace(/#.*$/, "").trim();
     if (!line) continue;
     const sec = line.match(/^\[([^\]]+)\]$/);
     if (sec) {
       section = sec[1].trim();
+      inMembersArray = false;
       continue;
     }
-    if (section === "package" || section === "workspace.package") {
+
+    if (section === "package") {
       const m = line.match(/^name\s*=\s*"([^"]+)"/);
-      if (m && section === "package") out.packageName = m[1];
+      if (m) out.packageName = m[1];
       const v = line.match(/^version\s*=\s*"([^"]+)"/);
-      if (v && section === "package") out.packageVersion = v[1];
-    }
-    if (section === "workspace") {
-      out.isWorkspace = true;
-      // members = ["a", "b"] single line
-      const mem = line.match(/^members\s*=\s*\[(.*)\]/);
-      if (mem) {
-        for (const part of mem[1].split(",")) {
-          const q = part.match(/"([^"]+)"/);
-          if (q) out.members.push(q[1]);
-        }
+      if (v) out.packageVersion = v[1];
+      if (/^version\.workspace\s*=\s*true/.test(line) || /^version\s*=\s*\{\s*workspace\s*=\s*true/.test(line)) {
+        out.versionWorkspace = true;
       }
     }
-    if (section === "dependencies" || section === "dev-dependencies" || section === "build-dependencies") {
+
+    if (section === "workspace.package") {
+      const v = line.match(/^version\s*=\s*"([^"]+)"/);
+      if (v) out.workspacePackageVersion = v[1];
+    }
+
+    if (section === "workspace") {
+      out.isWorkspace = true;
+      if (inMembersArray || /^members\s*=/.test(line)) {
+        if (/^members\s*=\s*\[/.test(line) && !line.includes("]")) inMembersArray = true;
+        for (const q of line.matchAll(/"([^"]+)"/g)) out.members.push(q[1]);
+        if (line.includes("]")) inMembersArray = false;
+      }
+    }
+
+    if (
+      section === "dependencies" ||
+      section === "dev-dependencies" ||
+      section === "build-dependencies"
+    ) {
       const simple = line.match(/^([A-Za-z0-9_-]+)\s*=\s*"([^"]+)"/);
       if (simple) {
         out.deps[simple[1]] = simple[2];
@@ -103,9 +120,10 @@ function parseCargoTomlRough(text) {
       if (ver) out.deps[ver[1]] = ver[2];
       if (/workspace\s*=\s*true/.test(line)) {
         const name = line.match(/^([A-Za-z0-9_-]+)\s*=/);
-        if (name) out.deps[name[1]] = "workspace";
+        if (name) out.deps[name[1]] = out.deps[name[1]] || "workspace";
       }
     }
+
     if (section === "workspace.dependencies") {
       const simple = line.match(/^([A-Za-z0-9_-]+)\s*=\s*"([^"]+)"/);
       if (simple) {
@@ -117,6 +135,14 @@ function parseCargoTomlRough(text) {
     }
   }
   return out;
+}
+
+function resolvePackageVersion(parsed, workspacePackageVersion) {
+  if (parsed.packageVersion) return parsed.packageVersion;
+  if (parsed.versionWorkspace) {
+    return workspacePackageVersion || "workspace";
+  }
+  return "?";
 }
 
 function cmdHelp() {
@@ -162,17 +188,17 @@ function cmdDoctor() {
 function cmdCachePlan() {
   console.log(`# cargo-tog cache plan
 #
-# SHARE across master monorepo + polyrepos
-# ----------------------------------------
-# 1. CARGO_HOME registry + git  (downloads)
-# 2. sccache with remote S3/R2  (compiler objects)  ← multi-repo CI win
-# 3. Dependency pin policy from master workspace.dependencies
+# SHARE (any multi-project / polyrepo setup)
+# -----------------------------------------
+# 1. CARGO_HOME registry + git          (downloads)
+# 2. sccache + remote S3/R2 when ready  (compiler objects across repos)
+# 3. Optional: one tree owns dependency pins; dep-drift the rest
 #
 # DO NOT SHARE
 # ------------
 # 1. One CARGO_TARGET_DIR for unrelated workspaces
-# 2. Full target/ in GitHub Actions cache when using sccache (too big)
-# 3. cargo-chef layers across different apps (per Dockerfile only)
+# 2. Full target/ upload to GitHub Actions when using sccache
+# 3. cargo-chef layers across different apps (Docker only)
 #
 # Laptop
 # ------
@@ -180,14 +206,12 @@ export RUSTC_WRAPPER=sccache
 export SCCACHE_DIR="$HOME/.cache/sccache"
 # export CARGO_HOME="$HOME/.cargo"
 #
-# CI (per repo)
-# -------------
-# - mozilla-actions/sccache-action OR remote SCCACHE_BUCKET
-# - Swatinem/rust-cache with cache-targets: false
-# - CARGO_PROFILE_DEV_DEBUG=0
-#
-# Master monorepo already follows this (sd-soundseek). Polyrepos should copy
-# the same env split; point sccache at the same R2 bucket when ready.
+# CI
+# --
+# - cargo-tog Action OR sccache-action + rust-cache (cache-targets: false)
+# - CARGO_PROFILE_DEV_DEBUG=0  CARGO_INCREMENTAL=0
+# - cargo test / cargo nextest / cargo bench all hit the same sccache
+# - set SCCACHE_BUCKET (+ endpoint/keys) for org-wide reuse
 `);
 }
 
@@ -203,29 +227,41 @@ function cmdInventory() {
 
   const workspaceDeps = {};
   const packages = [];
+  let workspacePackageVersion = null;
+  let rootMembers = [];
+  const parsedFiles = tomls.map((file) => ({
+    file,
+    rel: relative(root, file),
+    parsed: parseCargoTomlRough(readFileSync(file, "utf8")),
+  }));
 
-  for (const file of tomls) {
-    const text = readFileSync(file, "utf8");
-    const parsed = parseCargoTomlRough(text);
-    const rel = relative(root, file);
-    if (Object.keys(parsed.workspaceDeps).length) {
-      Object.assign(workspaceDeps, parsed.workspaceDeps);
+  for (const { rel, parsed } of parsedFiles) {
+    if (parsed.workspacePackageVersion) {
+      workspacePackageVersion = parsed.workspacePackageVersion;
     }
-    if (parsed.packageName) {
-      packages.push({
-        path: rel,
-        name: parsed.packageName,
-        version: parsed.packageVersion,
-        deps: parsed.deps,
-      });
-    } else if (parsed.isWorkspace) {
-      console.log(`[workspace] ${rel} members=${parsed.members.length || "?"}`);
+    Object.assign(workspaceDeps, parsed.workspaceDeps);
+    if (parsed.isWorkspace && parsed.members.length) {
+      rootMembers = parsed.members;
+      console.log(`[workspace] ${rel} members=${parsed.members.length}`);
     }
+  }
+
+  for (const { rel, parsed } of parsedFiles) {
+    if (!parsed.packageName) continue;
+    packages.push({
+      path: rel,
+      name: parsed.packageName,
+      version: resolvePackageVersion(parsed, workspacePackageVersion),
+      deps: parsed.deps,
+    });
   }
 
   console.log("packages:");
   for (const p of packages.sort((a, b) => a.name.localeCompare(b.name))) {
     console.log(`  ${p.name}@${p.version || "?"}  (${p.path})`);
+  }
+  if (rootMembers.length) {
+    console.log(`\nworkspace members declared: ${rootMembers.length}`);
   }
 
   const wd = Object.keys(workspaceDeps).sort();

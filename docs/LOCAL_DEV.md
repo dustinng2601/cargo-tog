@@ -2,78 +2,44 @@
 
 ## One cargo home
 
-Leave the default unless you have a reason:
-
 ```sh
-echo $CARGO_HOME   # usually empty → ~/.cargo
+echo "${CARGO_HOME:-$HOME/.cargo}"
 ```
 
-Multiple `CARGO_HOME`s mean multiple downloads of the same crates.
+Multiple homes mean multiple downloads of the same crates.
 
-## sccache on the laptop
+## sccache
 
 ```sh
-brew install sccache   # or cargo install sccache --locked
+# macOS
+brew install sccache
+# or: cargo install sccache --locked
+
 export RUSTC_WRAPPER=sccache
-export SCCACHE_DIR="$HOME/.cache/sccache"
+export SCCACHE_DIR="${SCCACHE_DIR:-$HOME/.cache/sccache}"
 sccache --start-server
-sccache -s             # stats
+sccache -s
 ```
 
-After a full monorepo build, building a **polyrepo** that depends on the same
-crates (same version, same rustc) should show **cache hits** if using the same
-local `SCCACHE_DIR`.
+After building project A, building project B with the same crate versions and
+rustc should show **cache hits** in `sccache -s`.
 
-## Target directories
+Optional: set the same S3/R2 env vars as CI to share objects with CI runners.
+
+## Target dirs
 
 ```sh
-# monorepo
-cd ~/Documents/soundseek
-cargo build -p soundseek-cli   # uses ./target
-
-# separate clone of a split — separate target
-cd ~/Documents/soundseek-cli-checkout
-cargo build                    # uses its own ./target
-# still benefits from ~/.cargo + sccache
+cd ~/code/project-a && cargo build    # ./target
+cd ~/code/project-b && cargo build    # its own ./target
+# both still use ~/.cargo + sccache
 ```
 
-Optional: put monorepo target on a fast disk:
+Never point unrelated workspaces at one `CARGO_TARGET_DIR`.
+
+## nextest
 
 ```sh
-export CARGO_TARGET_DIR=/Volumes/Fast/cargo-target/sd-soundseek
+cargo install cargo-nextest --locked
+cargo nextest run --workspace
+# uses RUSTC_WRAPPER=sccache automatically when set
 ```
-
-Never point two different workspaces at the same `CARGO_TARGET_DIR`.
-
-## cargo-chef
-
-Only if you build Docker images for a service. Example sketch:
-
-```dockerfile
-FROM lukemathwalker/cargo-chef:latest-rust-1 AS planner
-WORKDIR /app
-COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
-
-FROM lukemathwalker/cargo-chef:latest-rust-1 AS cacher
-WORKDIR /app
-COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
-
-FROM rust:1 AS builder
-WORKDIR /app
-COPY --from=cacher /app/target target
-COPY --from=cacher /usr/local/cargo /usr/local/cargo
-COPY . .
-RUN cargo build --release -p some-service
-```
-
-Desktop / Tauri workflows usually skip this.
-
-## Refactor loop
-
-1. Change code in master monorepo.  
-2. `cargo test -p …` (sccache warms).  
-3. Sync partial mirror to polyrepo if needed.  
-4. In polyrepo: `cargo check` — registry + sccache hits, tiny local `target/`.  
-5. `node cargo-tog.mjs dep-drift` if pins might have moved.

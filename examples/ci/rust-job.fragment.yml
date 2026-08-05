@@ -1,28 +1,26 @@
-# Drop into a polyrepo or monorepo workflow job.
-# Prefer: uses: sd2ek/cargo-tog/action@main when that is wired.
+# Drop into any Rust repo workflow job.
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_PROFILE_DEV_DEBUG: "0"
-  RUSTC_WRAPPER: sccache
-  # Local GHA backend (per-repo). For org-wide hits, use R2 secrets instead
-  # and drop SCCACHE_GHA_ENABLED.
-  SCCACHE_GHA_ENABLED: "true"
+  CARGO_INCREMENTAL: "0"
+  # Optional remote sccache — empty secrets keep GHA backend
+  SCCACHE_BUCKET: ${{ secrets.SCCACHE_BUCKET }}
+  SCCACHE_ENDPOINT: ${{ secrets.SCCACHE_ENDPOINT }}
+  SCCACHE_REGION: ${{ secrets.SCCACHE_REGION }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
 
 steps:
   - uses: actions/checkout@v4
 
   - uses: dtolnay/rust-toolchain@stable
-    with:
-      toolchain: stable
 
-  - uses: mozilla-actions/sccache-action@v0.0.9
-
-  - uses: Swatinem/rust-cache@v2
+  - uses: your-org/cargo-tog/action@main
     with:
-      workspaces: ". -> target"
-      cache-targets: false
-      cache-bin: false
+      key: test-${{ runner.os }}-${{ runner.arch }}
+      install-nextest: "true"
 
   - name: Test
-    run: cargo test --workspace --all-features
+    run: cargo nextest run --workspace
+    # fallback: cargo test --workspace

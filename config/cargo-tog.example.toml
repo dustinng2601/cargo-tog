@@ -1,57 +1,33 @@
-# Example org config for cargo-tog.
-# Copy to cargo-tog.toml at the org tools root or monorepo root.
+# Example org / multi-project config for cargo-tog.
+# Copy to cargo-tog.toml wherever you keep tooling config.
 
 [org]
-name = "sd2ek"
-# Master monorepo: source of workspace.dependency pins + primary lockfile.
-master = "sd-soundseek"
+name = "example-org"
+# Optional: path or clone name of the workspace that owns dependency pins.
+# master = "my-monorepo"
 
 [cache]
-# Prefer remote sccache for multi-repo CI; local disk for laptops.
-sccache_backend = "local" # local | gha | s3
-# s3/r2 bucket name when backend = "s3"
-# bucket = "sd2ek-sccache"
-# Never recommend sharing target/ across different workspaces:
+# local | gha | s3  (s3 = any S3-compatible store including R2)
+sccache_backend = "local"
+# bucket = "my-sccache"
 share_target_dir = false
 
 [cache.local]
 sccache_dir = "~/.cache/sccache"
-# Optional per-repo target roots (absolute, on fast disk):
-# target_root = "/var/tmp/cargo-target"
 
-[polyrepo]
-# kind: mirror (partial source copy) | deploy | library | docs
-[[polyrepo.repos]]
-name = "soundseek-cli"
-kind = "mirror"
-notes = "Partial mirror of monorepo cli/; own Cargo.toml may stay workspace-linked until standalone."
-
-[[polyrepo.repos]]
-name = "soundseek-plugins"
-kind = "mirror"
-notes = "First-party plugins + crates."
-
-[[polyrepo.repos]]
-name = "sd-core"
-kind = "library"
-notes = "Closed core; ABI pin against master codex-abi."
-
-[[polyrepo.repos]]
-name = "sd-cf-work-dev"
-kind = "deploy"
-notes = "JS Worker; Cargo only if present."
-
-[[polyrepo.repos]]
-name = "sd-cf-work-prod"
-kind = "deploy"
-
-[[polyrepo.repos]]
-name = "homebrew-ssk"
-kind = "docs"
-notes = "Formula only; no Cargo."
+# Related trees for dep-drift (optional)
+# [[trees]]
+# name = "main"
+# path = "../my-monorepo"
+# kind = "master"
+#
+# [[trees]]
+# name = "service-b"
+# path = "../service-b"
+# kind = "split"
 
 [ci]
-# Match monorepo practice:
 cache_targets = false
 cache_bin = false
 profile_dev_debug = "0"
+cargo_incremental = "0"
