@@ -35,16 +35,18 @@ pub fn find_primary_lock(root: &Path) -> Option<std::path::PathBuf> {
     if root_lock.is_file() {
         return Some(root_lock);
     }
-    // shallow search one level for nested workspaces
-    if let Ok(rd) = fs::read_dir(root) {
-        for e in rd.flatten() {
-            let p = e.path().join("Cargo.lock");
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-    }
-    None
+    // Shallow search one level for nested workspaces. Directory order is
+    // unspecified, so sort before picking: which lockfile a drift report
+    // compares against must not change between runs on the same tree.
+    let mut nested: Vec<std::path::PathBuf> = fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path().join("Cargo.lock"))
+        .filter(|p| p.is_file())
+        .collect();
+    nested.sort();
+    nested.into_iter().next()
 }
 
 fn parse_lockfile(text: &str) -> BTreeMap<String, Vec<String>> {
@@ -87,14 +89,12 @@ fn flush(
     name: &mut Option<String>,
     version: &mut Option<String>,
 ) {
+    // Both are taken unconditionally, so a partial entry is simply dropped.
     if let (Some(n), Some(v)) = (name.take(), version.take()) {
         let e = map.entry(n).or_default();
         if !e.contains(&v) {
             e.push(v);
         }
-    } else {
-        *name = None;
-        *version = None;
     }
 }
 
@@ -136,4 +136,3 @@ version = "1.0.200"
         );
     }
 }
-

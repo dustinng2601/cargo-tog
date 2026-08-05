@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::cargo_toml::{find_cargo_tomls, load_manifest, DepSpec};
+use crate::cargo_toml::{find_cargo_tomls, load_manifest, DepSpec, ParsedManifest};
 
 /// How a dependency appears after resolving workspace pins in-tree.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -80,12 +80,19 @@ impl DepGraph {
             for (k, spec) in &m.workspace_deps {
                 g.workspace_pins.insert(k.clone(), spec.clone());
             }
-            loaded.push(m);
+            loaded.push((p.clone(), m));
         }
 
-        for m in &loaded {
+        // A tree can hold several independent workspaces (a polyrepo checkout
+        // root). Resolve `workspace = true` against the pins of the workspace
+        // that actually owns the manifest, so sibling workspaces cannot
+        // silently answer for each other.
+        let pins_by_dir = workspace_pin_index(&loaded);
+
+        for (path, m) in &loaded {
+            let pins = owning_pins(path, &pins_by_dir).unwrap_or(&g.workspace_pins);
             for (name, spec) in m.workspace_deps.iter().chain(m.deps.iter()) {
-                let req = resolve(name, spec, &g.workspace_pins);
+                let req = resolve(name, spec, pins);
                 g.deps.entry(name.clone()).or_default().insert(req);
             }
         }
@@ -106,6 +113,32 @@ impl DepGraph {
             .map(|s| s.iter().map(|r| r.drift_key()).collect())
             .unwrap_or_default()
     }
+}
+
+/// Map each workspace root directory to the pins it declares.
+fn workspace_pin_index(
+    loaded: &[(PathBuf, ParsedManifest)],
+) -> BTreeMap<PathBuf, BTreeMap<String, DepSpec>> {
+    loaded
+        .iter()
+        .filter(|(_, m)| m.is_workspace)
+        .filter_map(|(path, m)| Some((path.parent()?.to_path_buf(), m.workspace_deps.clone())))
+        .collect()
+}
+
+/// Pins of the nearest ancestor workspace, i.e. the one Cargo would consult.
+fn owning_pins<'a>(
+    manifest: &Path,
+    pins_by_dir: &'a BTreeMap<PathBuf, BTreeMap<String, DepSpec>>,
+) -> Option<&'a BTreeMap<String, DepSpec>> {
+    let mut dir = manifest.parent();
+    while let Some(current) = dir {
+        if let Some(pins) = pins_by_dir.get(current) {
+            return Some(pins);
+        }
+        dir = current.parent();
+    }
+    None
 }
 
 fn resolve(name: &str, spec: &DepSpec, pins: &BTreeMap<String, DepSpec>) -> ResolvedReq {
@@ -193,6 +226,48 @@ clap = "4"
             "expected workspace pin 1, got {keys:?}"
         );
         assert!(g.drift_keys("clap").contains("ver:4"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sibling_workspaces_resolve_against_their_own_pins() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("cargo-tog-siblings-{stamp}"));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Two independent workspaces under one tree pin serde differently.
+        for (repo, pin) in [("repo-a", "1.0"), ("repo-b", "2.0")] {
+            std::fs::create_dir_all(dir.join(repo).join("app")).unwrap();
+            std::fs::write(
+                dir.join(repo).join("Cargo.toml"),
+                format!(
+                    "[workspace]\nmembers = [\"app\"]\n\n\
+                     [workspace.dependencies]\nserde = {{ version = \"{pin}\" }}\n"
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join(repo).join("app/Cargo.toml"),
+                format!(
+                    "[package]\nname = \"{repo}-app\"\nversion = \"0.1.0\"\n\n\
+                     [dependencies]\nserde = {{ workspace = true }}\n"
+                ),
+            )
+            .unwrap();
+        }
+
+        let g = DepGraph::collect(&dir).unwrap();
+        let keys = g.drift_keys("serde");
+
+        // Each member must see its own workspace's pin — not whichever tree
+        // happened to be walked last.
+        assert!(
+            keys.contains("ver:1.0") && keys.contains("ver:2.0"),
+            "sibling workspaces collapsed onto one pin: {keys:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
