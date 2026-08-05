@@ -7,11 +7,7 @@ use std::env;
 use std::ffi::OsString;
 
 fn main() {
-    // Re-export library modules via path — bin can't use crate name easily for
-    // both bins without lib. Duplicate thin entry that calls shared logic by
-    // including the same modules… Better: make a lib.rs.
-    //
-    // For a single package with two bins, put shared code in lib.rs.
+    // argv[0] is this wrapper; everything after it is `<rustc> <args…>`.
     let args: Vec<OsString> = env::args_os().skip(1).collect();
     cargo_tog::engine::exec_rustc_via_engine(&args);
 }
