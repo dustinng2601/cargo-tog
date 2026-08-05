@@ -1,28 +1,86 @@
 #!/usr/bin/env bash
-# Compatibility launcher: prefer the Rust binary, else map env and call engine.
+# Compatibility launcher for RUSTC_WRAPPER (Unix).
+#
+# The supported path is the native binary (`cargo install --path .`). This shim
+# only exists for checkouts that have not installed it yet, and it must never
+# resolve back to itself: `config/env.local.example` puts this directory on
+# PATH, so a bare `command -v cargo-tog-rustc` finds this file and exec'ing it
+# would spin forever.
+#
+# Cargo invokes a wrapper as `wrapper <rustc> <args…>`, so "$1" is the compiler
+# to run, not an argument to pass to it.
 set -euo pipefail
-DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$DIR/.." && pwd)"
+
+self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+root="$(cd "$(dirname "$0")/.." && pwd)"
+
+resolves_to_self() {
+  local candidate resolved
+  candidate="$(command -v "$1" 2>/dev/null || true)"
+  [[ -z "$candidate" ]] && return 1
+  resolved="$(cd "$(dirname "$candidate")" && pwd)/$(basename "$candidate")"
+  [[ "$resolved" == "$self" ]]
+}
 
 for cand in \
   "cargo-tog-rustc" \
-  "$ROOT/target/release/cargo-tog-rustc" \
-  "$ROOT/target/debug/cargo-tog-rustc"
+  "$root/target/release/cargo-tog-rustc" \
+  "$root/target/debug/cargo-tog-rustc"
 do
-  if command -v "$cand" >/dev/null 2>&1 || [[ -x "$cand" ]]; then
-    if [[ -x "$cand" ]]; then exec "$cand" "$@"; fi
+  if resolves_to_self "$cand"; then
+    continue
+  fi
+  if command -v "$cand" >/dev/null 2>&1; then
     exec "$cand" "$@"
   fi
 done
 
-# Last resort: inline env map + engine (Unix only)
-if [[ -n "${CARGO_TOG_CACHE_DIR:-}" ]]; then export SCCACHE_DIR="$CARGO_TOG_CACHE_DIR"; fi
-if [[ -n "${CARGO_TOG_BUCKET:-}" ]]; then export SCCACHE_BUCKET="$CARGO_TOG_BUCKET"; fi
-if [[ -n "${CARGO_TOG_ENDPOINT:-}" ]]; then export SCCACHE_ENDPOINT="$CARGO_TOG_ENDPOINT"; fi
-if [[ -n "${CARGO_TOG_REGION:-}" ]]; then export SCCACHE_REGION="$CARGO_TOG_REGION"
-elif [[ -n "${CARGO_TOG_BUCKET:-}" ]]; then export SCCACHE_REGION=auto; fi
-if [[ -n "${CARGO_TOG_ACCESS_KEY_ID:-}" ]]; then export AWS_ACCESS_KEY_ID="$CARGO_TOG_ACCESS_KEY_ID"; fi
-if [[ -n "${CARGO_TOG_SECRET_ACCESS_KEY:-}" ]]; then export AWS_SECRET_ACCESS_KEY="$CARGO_TOG_SECRET_ACCESS_KEY"; fi
+# ---------------------------------------------------------------------------
+# Fallback: no native binary. Mirror src/mode.rs closely enough to keep the
+# mode contract honest — in particular, never export bucket credentials for a
+# mode that is not `remote`.
+# ---------------------------------------------------------------------------
+mode="${CARGO_TOG_MODE:-auto}"
+mode="$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')"
+case "$mode" in
+  remote|bucket|s3|r2)          mode=remote ;;
+  github|gha|actions)           mode=github ;;
+  local|disk)                   mode=local ;;
+  registry-only|registry|downloads) mode=registry-only ;;
+  off|none|disable|disabled)    mode=off ;;
+  *)
+    if [[ -n "${CARGO_TOG_BUCKET:-}" ]]; then mode=remote
+    elif [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then mode=github
+    else mode=local
+    fi
+    ;;
+esac
 
-if command -v sccache >/dev/null 2>&1; then exec sccache "$@"; fi
-exec "${RUSTC:-rustc}" "$@"
+compiler="${1:-${RUSTC:-rustc}}"
+[[ $# -gt 0 ]] && shift
+
+# `registry-only` and `off` deliberately bypass the object engine.
+if [[ "$mode" == "registry-only" || "$mode" == "off" ]] || ! command -v sccache >/dev/null 2>&1; then
+  exec "$compiler" "$@"
+fi
+
+export SCCACHE_DIR="${CARGO_TOG_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/cargo-tog}"
+mkdir -p "$SCCACHE_DIR"
+
+if [[ "$mode" == "github" ]]; then
+  export SCCACHE_GHA_ENABLED=true
+else
+  export SCCACHE_GHA_ENABLED=false
+fi
+
+if [[ "$mode" == "remote" ]]; then
+  [[ -n "${CARGO_TOG_BUCKET:-}" ]] && export SCCACHE_BUCKET="$CARGO_TOG_BUCKET"
+  [[ -n "${CARGO_TOG_ENDPOINT:-}" ]] && export SCCACHE_ENDPOINT="$CARGO_TOG_ENDPOINT"
+  if [[ -n "${CARGO_TOG_REGION:-}" ]]; then export SCCACHE_REGION="$CARGO_TOG_REGION"
+  elif [[ -n "${CARGO_TOG_BUCKET:-}" ]]; then export SCCACHE_REGION=auto
+  fi
+  [[ -n "${CARGO_TOG_ACCESS_KEY_ID:-}" ]] && export AWS_ACCESS_KEY_ID="$CARGO_TOG_ACCESS_KEY_ID"
+  [[ -n "${CARGO_TOG_SECRET_ACCESS_KEY:-}" ]] && export AWS_SECRET_ACCESS_KEY="$CARGO_TOG_SECRET_ACCESS_KEY"
+fi
+
+exec sccache "$compiler" "$@"
