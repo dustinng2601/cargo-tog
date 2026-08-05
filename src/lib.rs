@@ -1,7 +1,9 @@
 //! Shared library for `cargo-tog` and `cargo-tog-rustc` binaries.
 
 pub mod cargo_toml;
+pub mod dep_graph;
 pub mod engine;
+pub mod lockfile;
 pub mod mode;
 pub mod platform;
 

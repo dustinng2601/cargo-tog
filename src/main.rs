@@ -31,13 +31,8 @@ enum Commands {
         #[arg(long, default_value = ".")]
         root: String,
     },
-    /// Compare explicit dependency versions between two trees
-    DepDrift {
-        #[arg(long)]
-        master: String,
-        #[arg(long)]
-        other: String,
-    },
+    /// Deep dependency drift (manifests + lockfiles) between two trees
+    DepDrift(commands::dep_drift::DepDriftArgs),
     /// Hash Cargo.lock files (for CI cache keys)
     LockFingerprint {
         #[arg(long, default_value = ".")]
@@ -65,7 +60,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::Inventory { root } => commands::inventory::run(&root),
-        Commands::DepDrift { master, other } => commands::dep_drift::run(&master, &other),
+        Commands::DepDrift(args) => commands::dep_drift::run_args(args),
         Commands::LockFingerprint { root } => commands::lock_fingerprint::run(&root),
         Commands::HostKey => {
             commands::host_key::run();

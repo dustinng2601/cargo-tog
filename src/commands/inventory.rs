@@ -18,7 +18,8 @@ pub fn run(root: &str) -> Result<()> {
     println!("Cargo.toml files: {}\n", tomls.len());
 
     let mut workspace_pkg_ver: Option<String> = None;
-    let mut workspace_deps = std::collections::BTreeMap::new();
+    let mut workspace_deps: std::collections::BTreeMap<String, cargo_tog::cargo_toml::DepSpec> =
+        std::collections::BTreeMap::new();
     let mut root_members = Vec::new();
     let mut packages: Vec<(String, String, String)> = Vec::new();
 
@@ -66,7 +67,7 @@ pub fn run(root: &str) -> Result<()> {
     if !workspace_deps.is_empty() {
         println!("\nworkspace.dependencies ({}):", workspace_deps.len());
         for (k, v) in &workspace_deps {
-            println!("  {k} = {v}");
+            println!("  {k} = {}", v.summary());
         }
     }
 

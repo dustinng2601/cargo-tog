@@ -1,4 +1,4 @@
-//! Lightweight Cargo.toml scraping (not a full TOML semantic model).
+//! Lightweight Cargo.toml scraping for inventory and dep-drift.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -8,14 +8,44 @@ use anyhow::{Context, Result};
 use walkdir::WalkDir;
 
 #[derive(Debug, Default, Clone)]
+pub struct DepSpec {
+    /// Semver req if present (`"1"`, `"0.12"`).
+    pub version: Option<String>,
+    pub path: Option<String>,
+    pub git: Option<String>,
+    pub workspace: bool,
+    /// Original kind for debugging
+    pub raw: String,
+}
+
+impl DepSpec {
+    pub fn summary(&self) -> String {
+        if self.workspace {
+            return "workspace".into();
+        }
+        if let Some(p) = &self.path {
+            return format!("path={p}");
+        }
+        if let Some(g) = &self.git {
+            return format!("git={g}");
+        }
+        if let Some(v) = &self.version {
+            return v.clone();
+        }
+        self.raw.clone()
+    }
+}
+
+#[derive(Debug, Default, Clone)]
 pub struct ParsedManifest {
     pub package_name: Option<String>,
     pub package_version: Option<String>,
     pub version_workspace: bool,
     pub is_workspace: bool,
     pub members: Vec<String>,
-    pub deps: BTreeMap<String, String>,
-    pub workspace_deps: BTreeMap<String, String>,
+    /// All dependency kinds: normal / dev / build collapsed for drift.
+    pub deps: BTreeMap<String, DepSpec>,
+    pub workspace_deps: BTreeMap<String, DepSpec>,
     pub workspace_package_version: Option<String>,
 }
 
@@ -42,12 +72,8 @@ pub fn parse_manifest(text: &str) -> ParsedManifest {
             if let Some(v) = string_assign(line, "version") {
                 out.package_version = Some(v);
             }
-            if line.starts_with("version.workspace") && line.contains("true")
-                || line.starts_with("version") && line.contains("workspace") && line.contains("true")
-            {
-                if line.contains("workspace") {
-                    out.version_workspace = true;
-                }
+            if line.contains("version") && line.contains("workspace") && line.contains("true") {
+                out.version_workspace = true;
             }
         }
 
@@ -76,27 +102,93 @@ pub fn parse_manifest(text: &str) -> ParsedManifest {
             section.as_str(),
             "dependencies" | "dev-dependencies" | "build-dependencies"
         ) {
-            if let Some((name, ver)) = simple_dep(line) {
-                out.deps.insert(name, ver);
-            } else if line.contains("workspace") {
-                if let Some(name) = dep_name(line) {
-                    out.deps.entry(name).or_insert_with(|| "workspace".into());
-                }
-            } else if let Some((name, ver)) = table_dep_version(line) {
-                out.deps.insert(name, ver);
+            if let Some((name, spec)) = parse_dep_line(line) {
+                out.deps.insert(name, spec);
             }
         }
 
         if section == "workspace.dependencies" {
-            if let Some((name, ver)) = simple_dep(line) {
-                out.workspace_deps.insert(name, ver);
-            } else if let Some((name, ver)) = table_dep_version(line) {
-                out.workspace_deps.insert(name, ver);
+            if let Some((name, spec)) = parse_dep_line(line) {
+                out.workspace_deps.insert(name, spec);
             }
         }
     }
 
     out
+}
+
+fn parse_dep_line(line: &str) -> Option<(String, DepSpec)> {
+    let (name_side, rest) = line.split_once('=')?;
+    let name_side = name_side.trim();
+    let rest = rest.trim();
+
+    // foo.workspace = true
+    if let Some(name) = name_side.strip_suffix(".workspace") {
+        let name = name.trim();
+        if is_ident(name) && rest.contains("true") {
+            return Some((
+                name.to_string(),
+                DepSpec {
+                    workspace: true,
+                    raw: rest.to_string(),
+                    ..Default::default()
+                },
+            ));
+        }
+    }
+
+    if !is_ident(name_side) {
+        return None;
+    }
+    let name = name_side;
+    let mut spec = DepSpec {
+        raw: rest.to_string(),
+        ..Default::default()
+    };
+
+    // foo = "1"
+    if let Some(v) = unquote(rest) {
+        spec.version = Some(v);
+        return Some((name.to_string(), spec));
+    }
+
+    // foo = { ... }  (single-line table)
+    if rest.starts_with('{') {
+        if let Some(v) = table_field(rest, "version") {
+            spec.version = Some(v);
+        }
+        if let Some(p) = table_field(rest, "path") {
+            spec.path = Some(p);
+        }
+        if let Some(g) = table_field(rest, "git") {
+            spec.git = Some(g);
+        }
+        if rest.contains("workspace") && rest.contains("true") {
+            spec.workspace = true;
+        }
+        return Some((name.to_string(), spec));
+    }
+
+    None
+}
+
+fn table_field(table: &str, key: &str) -> Option<String> {
+    // key = "value"
+    let patterns = [
+        format!("{key} = \""),
+        format!("{key}=\""),
+        format!("{key} = \""),
+    ];
+    for pat in &patterns {
+        if let Some(idx) = table.find(pat) {
+            let after = &table[idx + pat.len()..];
+            if let Some(end) = after.find('"') {
+                return Some(after[..end].to_string());
+            }
+        }
+    }
+    // also version.workspace style not a string field
+    None
 }
 
 pub fn resolve_package_version(parsed: &ParsedManifest, workspace_pkg_ver: Option<&str>) -> String {
@@ -115,7 +207,10 @@ pub fn find_cargo_tomls(root: &Path) -> Result<Vec<PathBuf>> {
         .into_iter()
         .filter_entry(|e| {
             let name = e.file_name().to_string_lossy();
-            name != "target" && name != "node_modules" && name != ".git"
+            name != "target"
+                && name != "node_modules"
+                && name != ".git"
+                && name != "dev_docs" // skip local scratch trees if present
         })
         .filter_map(|e| e.ok())
     {
@@ -128,71 +223,17 @@ pub fn find_cargo_tomls(root: &Path) -> Result<Vec<PathBuf>> {
 }
 
 pub fn load_manifest(path: &Path) -> Result<ParsedManifest> {
-    let text = fs::read_to_string(path)
-        .with_context(|| format!("read {}", path.display()))?;
+    let text =
+        fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     Ok(parse_manifest(&text))
 }
 
-pub fn collect_explicit_deps(root: &Path) -> Result<BTreeMap<String, Vec<String>>> {
-    let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for path in find_cargo_tomls(root)? {
-        let parsed = load_manifest(&path)?;
-        for (name, ver) in parsed.workspace_deps.iter().chain(parsed.deps.iter()) {
-            if ver == "workspace" {
-                continue;
-            }
-            let entry = map.entry(name.clone()).or_default();
-            if !entry.contains(ver) {
-                entry.push(ver.clone());
-            }
-        }
-    }
-    for vers in map.values_mut() {
-        vers.sort();
-    }
-    Ok(map)
-}
-
 fn string_assign(line: &str, key: &str) -> Option<String> {
-    let prefix = format!("{key} ");
-    let prefix_eq = format!("{key}=");
-    let rest = if let Some(r) = line.strip_prefix(&prefix) {
-        r.trim().strip_prefix('=')?.trim()
-    } else if let Some(r) = line.strip_prefix(&prefix_eq) {
-        r.trim()
-    } else {
-        return None;
-    };
-    unquote(rest)
-}
-
-fn simple_dep(line: &str) -> Option<(String, String)> {
-    let (name, rest) = line.split_once('=')?;
-    let name = name.trim();
-    if !is_ident(name) {
+    let (left, right) = line.split_once('=')?;
+    if left.trim() != key {
         return None;
     }
-    let rest = rest.trim();
-    let ver = unquote(rest)?;
-    Some((name.to_string(), ver))
-}
-
-fn table_dep_version(line: &str) -> Option<(String, String)> {
-    let name = dep_name(line)?;
-    // version = "x" inside { }
-    let idx = line.find("version")?;
-    let after = line[idx + "version".len()..].trim().strip_prefix('=')?.trim();
-    let ver = unquote(after.split(',').next()?.trim())?;
-    Some((name, ver))
-}
-
-fn dep_name(line: &str) -> Option<String> {
-    let name = line.split('=').next()?.trim();
-    if is_ident(name) {
-        Some(name.to_string())
-    } else {
-        None
-    }
+    unquote(right.trim())
 }
 
 fn is_ident(s: &str) -> bool {
@@ -240,16 +281,43 @@ version.workspace = true
     }
 
     #[test]
-    fn parses_workspace_package_version() {
+    fn parses_explicit_and_workspace_deps() {
         let m = parse_manifest(
             r#"
-[workspace.package]
-version = "2026.1.1-beta.3"
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+tokio.workspace = true
+anyhow = { workspace = true }
+dirs = "6"
+sdsk-client = { path = "../crates/sdsk-client" }
+"#,
+        );
+        assert_eq!(m.deps.get("clap").and_then(|d| d.version.as_deref()), Some("4"));
+        assert_eq!(m.deps.get("dirs").and_then(|d| d.version.as_deref()), Some("6"));
+        assert!(m.deps.get("anyhow").is_some_and(|d| d.workspace));
+        assert!(m.deps.get("tokio").is_some_and(|d| d.workspace));
+        assert_eq!(
+            m.deps.get("sdsk-client").and_then(|d| d.path.as_deref()),
+            Some("../crates/sdsk-client")
+        );
+    }
+
+    #[test]
+    fn parses_workspace_dependency_pins() {
+        let m = parse_manifest(
+            r#"
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = "1"
 "#,
         );
         assert_eq!(
-            m.workspace_package_version.as_deref(),
-            Some("2026.1.1-beta.3")
+            m.workspace_deps.get("tokio").and_then(|d| d.version.as_deref()),
+            Some("1")
+        );
+        assert_eq!(
+            m.workspace_deps.get("serde").and_then(|d| d.version.as_deref()),
+            Some("1")
         );
     }
 }
