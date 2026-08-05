@@ -49,9 +49,26 @@ pub struct ParsedManifest {
     pub workspace_package_version: Option<String>,
 }
 
+/// Which table the parser is currently inside.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Section {
+    Package,
+    WorkspacePackage,
+    Workspace,
+    /// `[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`
+    Deps,
+    /// `[workspace.dependencies]`
+    WorkspaceDeps,
+    /// `[dependencies.<name>]` — a dependency spelled as its own table
+    DepEntry(String),
+    /// `[workspace.dependencies.<name>]`
+    WorkspaceDepEntry(String),
+    Other,
+}
+
 pub fn parse_manifest(text: &str) -> ParsedManifest {
     let mut out = ParsedManifest::default();
-    let mut section = String::new();
+    let mut section = Section::Other;
     let mut in_members = false;
 
     for raw in text.lines() {
@@ -60,61 +77,166 @@ pub fn parse_manifest(text: &str) -> ParsedManifest {
             continue;
         }
         if line.starts_with('[') && line.ends_with(']') {
-            section = line[1..line.len() - 1].trim().to_string();
+            let header = line[1..line.len() - 1].trim();
+            section = classify_section(header);
             in_members = false;
+            if section == Section::Workspace {
+                out.is_workspace = true;
+            }
+            // A dependency table exists even if every line in it is a field we
+            // ignore (`features`, `optional`, …), so register it eagerly.
+            match &section {
+                Section::DepEntry(name) => {
+                    out.deps
+                        .entry(name.clone())
+                        .or_insert_with(|| table_spec(header));
+                }
+                Section::WorkspaceDepEntry(name) => {
+                    out.workspace_deps
+                        .entry(name.clone())
+                        .or_insert_with(|| table_spec(header));
+                }
+                _ => {}
+            }
             continue;
         }
 
-        if section == "package" {
-            if let Some(v) = string_assign(line, "name") {
-                out.package_name = Some(v);
-            }
-            if let Some(v) = string_assign(line, "version") {
-                out.package_version = Some(v);
-            }
-            if line.contains("version") && line.contains("workspace") && line.contains("true") {
-                out.version_workspace = true;
-            }
-        }
-
-        if section == "workspace.package" {
-            if let Some(v) = string_assign(line, "version") {
-                out.workspace_package_version = Some(v);
-            }
-        }
-
-        if section == "workspace" {
-            out.is_workspace = true;
-            if in_members || line.starts_with("members") {
-                if line.starts_with("members") && line.contains('[') && !line.contains(']') {
-                    in_members = true;
+        match &section {
+            Section::Package => {
+                if let Some(v) = string_assign(line, "name") {
+                    out.package_name = Some(v);
                 }
-                for q in quoted_strings(line) {
-                    out.members.push(q);
+                if let Some(v) = string_assign(line, "version") {
+                    out.package_version = Some(v);
                 }
-                if line.contains(']') {
-                    in_members = false;
+                if line.contains("version") && line.contains("workspace") && line.contains("true") {
+                    out.version_workspace = true;
                 }
             }
-        }
-
-        if matches!(
-            section.as_str(),
-            "dependencies" | "dev-dependencies" | "build-dependencies"
-        ) {
-            if let Some((name, spec)) = parse_dep_line(line) {
-                out.deps.insert(name, spec);
+            Section::WorkspacePackage => {
+                if let Some(v) = string_assign(line, "version") {
+                    out.workspace_package_version = Some(v);
+                }
             }
-        }
-
-        if section == "workspace.dependencies" {
-            if let Some((name, spec)) = parse_dep_line(line) {
-                out.workspace_deps.insert(name, spec);
+            Section::Workspace => {
+                if in_members || line.starts_with("members") {
+                    if line.starts_with("members") && line.contains('[') && !line.contains(']') {
+                        in_members = true;
+                    }
+                    for q in quoted_strings(line) {
+                        out.members.push(q);
+                    }
+                    if line.contains(']') {
+                        in_members = false;
+                    }
+                }
             }
+            Section::Deps => {
+                if let Some((name, spec)) = parse_dep_line(line) {
+                    out.deps.insert(name, spec);
+                }
+            }
+            Section::WorkspaceDeps => {
+                if let Some((name, spec)) = parse_dep_line(line) {
+                    out.workspace_deps.insert(name, spec);
+                }
+            }
+            Section::DepEntry(name) => {
+                if let Some(spec) = out.deps.get_mut(name) {
+                    apply_entry_field(spec, line);
+                }
+            }
+            Section::WorkspaceDepEntry(name) => {
+                if let Some(spec) = out.workspace_deps.get_mut(name) {
+                    apply_entry_field(spec, line);
+                }
+            }
+            Section::Other => {}
         }
     }
 
     out
+}
+
+fn table_spec(header: &str) -> DepSpec {
+    DepSpec {
+        raw: format!("[{header}]"),
+        ..Default::default()
+    }
+}
+
+/// Map a table header to the section it denotes.
+///
+/// Target predicates are transparent: `[target.'cfg(unix)'.dependencies]`
+/// contributes to the same dependency set as `[dependencies]`, because drift
+/// in a platform-gated pin is still drift.
+fn classify_section(header: &str) -> Section {
+    let mut parts = split_header(header);
+    if parts.len() >= 3 && parts[0] == "target" {
+        parts.drain(..2);
+    }
+    let parts: Vec<&str> = parts.iter().map(String::as_str).collect();
+    match parts.as_slice() {
+        ["package"] => Section::Package,
+        ["workspace"] => Section::Workspace,
+        ["workspace", "package"] => Section::WorkspacePackage,
+        ["workspace", "dependencies"] => Section::WorkspaceDeps,
+        ["workspace", "dependencies", name] if is_ident(name) => {
+            Section::WorkspaceDepEntry((*name).to_string())
+        }
+        [kind] if is_dep_kind(kind) => Section::Deps,
+        [kind, name] if is_dep_kind(kind) && is_ident(name) => {
+            Section::DepEntry((*name).to_string())
+        }
+        _ => Section::Other,
+    }
+}
+
+fn is_dep_kind(s: &str) -> bool {
+    matches!(
+        s,
+        "dependencies" | "dev-dependencies" | "build-dependencies"
+    )
+}
+
+/// Split a table header on `.`, treating quoted spans as opaque.
+///
+/// `target.'cfg(target_os = "linux")'.dependencies` must not split inside the
+/// predicate, which contains both dots and quotes of the other kind.
+fn split_header(header: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+
+    for c in header.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => cur.push(c),
+            None if c == '\'' || c == '"' => quote = Some(c),
+            None if c == '.' => {
+                parts.push(cur.trim().to_string());
+                cur.clear();
+            }
+            None => cur.push(c),
+        }
+    }
+    parts.push(cur.trim().to_string());
+    parts
+}
+
+/// Fold one `key = value` line of a `[dependencies.<name>]` table into its spec.
+fn apply_entry_field(spec: &mut DepSpec, line: &str) {
+    let Some((key, value)) = line.split_once('=') else {
+        return;
+    };
+    let (key, value) = (key.trim(), value.trim());
+    match key {
+        "version" => spec.version = unquote(value).or_else(|| spec.version.take()),
+        "path" => spec.path = unquote(value).or_else(|| spec.path.take()),
+        "git" => spec.git = unquote(value).or_else(|| spec.git.take()),
+        "workspace" => spec.workspace = value.contains("true"),
+        _ => {}
+    }
 }
 
 fn parse_dep_line(line: &str) -> Option<(String, DepSpec)> {
@@ -172,22 +294,33 @@ fn parse_dep_line(line: &str) -> Option<(String, DepSpec)> {
     None
 }
 
+/// Read `key = "value"` out of a single-line inline table.
+///
+/// The key must start a field, so looking up `path` does not match the `path`
+/// inside a key like `default-path` or a value like `git = "…/path"`.
 fn table_field(table: &str, key: &str) -> Option<String> {
-    // key = "value"
-    let patterns = [
-        format!("{key} = \""),
-        format!("{key}=\""),
-        format!("{key} = \""),
-    ];
-    for pat in &patterns {
-        if let Some(idx) = table.find(pat) {
-            let after = &table[idx + pat.len()..];
-            if let Some(end) = after.find('"') {
-                return Some(after[..end].to_string());
+    let mut from = 0usize;
+    while let Some(rel) = table[from..].find(key) {
+        let start = from + rel;
+        from = start + key.len();
+
+        let starts_field = table[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| c == '{' || c == ',' || c.is_whitespace());
+        if !starts_field {
+            continue;
+        }
+        let after = table[from..].trim_start();
+        let Some(after) = after.strip_prefix('=') else {
+            continue;
+        };
+        if let Some(value) = after.trim_start().strip_prefix('"') {
+            if let Some(end) = value.find('"') {
+                return Some(value[..end].to_string());
             }
         }
     }
-    // also version.workspace style not a string field
     None
 }
 
@@ -206,11 +339,9 @@ pub fn find_cargo_tomls(root: &Path) -> Result<Vec<PathBuf>> {
     for entry in WalkDir::new(root)
         .into_iter()
         .filter_entry(|e| {
+            // `dev_docs` skips local scratch trees if present.
             let name = e.file_name().to_string_lossy();
-            name != "target"
-                && name != "node_modules"
-                && name != ".git"
-                && name != "dev_docs" // skip local scratch trees if present
+            name != "target" && name != "node_modules" && name != ".git" && name != "dev_docs"
         })
         .filter_map(|e| e.ok())
     {
@@ -223,8 +354,7 @@ pub fn find_cargo_tomls(root: &Path) -> Result<Vec<PathBuf>> {
 }
 
 pub fn load_manifest(path: &Path) -> Result<ParsedManifest> {
-    let text =
-        fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     Ok(parse_manifest(&text))
 }
 
@@ -292,14 +422,148 @@ dirs = "6"
 sdsk-client = { path = "../crates/sdsk-client" }
 "#,
         );
-        assert_eq!(m.deps.get("clap").and_then(|d| d.version.as_deref()), Some("4"));
-        assert_eq!(m.deps.get("dirs").and_then(|d| d.version.as_deref()), Some("6"));
+        assert_eq!(
+            m.deps.get("clap").and_then(|d| d.version.as_deref()),
+            Some("4")
+        );
+        assert_eq!(
+            m.deps.get("dirs").and_then(|d| d.version.as_deref()),
+            Some("6")
+        );
         assert!(m.deps.get("anyhow").is_some_and(|d| d.workspace));
         assert!(m.deps.get("tokio").is_some_and(|d| d.workspace));
         assert_eq!(
             m.deps.get("sdsk-client").and_then(|d| d.path.as_deref()),
             Some("../crates/sdsk-client")
         );
+    }
+
+    #[test]
+    fn parses_dependency_tables() {
+        let m = parse_manifest(
+            r#"
+[dependencies.serde]
+version = "1.0"
+features = ["derive"]
+
+[dev-dependencies.tempfile]
+version = "3"
+
+[build-dependencies.cc]
+workspace = true
+
+[dependencies.local]
+path = "../local"
+"#,
+        );
+        assert_eq!(
+            m.deps.get("serde").and_then(|d| d.version.as_deref()),
+            Some("1.0")
+        );
+        assert_eq!(
+            m.deps.get("tempfile").and_then(|d| d.version.as_deref()),
+            Some("3")
+        );
+        assert!(m.deps.get("cc").is_some_and(|d| d.workspace));
+        assert_eq!(
+            m.deps.get("local").and_then(|d| d.path.as_deref()),
+            Some("../local")
+        );
+    }
+
+    #[test]
+    fn parses_target_specific_dependencies() {
+        let m = parse_manifest(
+            r#"
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+inotify = "0.10"
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.59"
+
+[target.x86_64-pc-windows-msvc.dev-dependencies]
+winapi = "0.3"
+"#,
+        );
+        // A dotted, quote-bearing cfg predicate must not split the header.
+        assert_eq!(
+            m.deps.get("libc").and_then(|d| d.version.as_deref()),
+            Some("0.2")
+        );
+        assert_eq!(
+            m.deps.get("inotify").and_then(|d| d.version.as_deref()),
+            Some("0.10")
+        );
+        assert_eq!(
+            m.deps.get("windows-sys").and_then(|d| d.version.as_deref()),
+            Some("0.59")
+        );
+        assert_eq!(
+            m.deps.get("winapi").and_then(|d| d.version.as_deref()),
+            Some("0.3")
+        );
+    }
+
+    #[test]
+    fn parses_workspace_dependency_tables() {
+        let m = parse_manifest(
+            r#"
+[workspace.dependencies.tokio]
+version = "1.40"
+features = ["full"]
+"#,
+        );
+        assert_eq!(
+            m.workspace_deps
+                .get("tokio")
+                .and_then(|d| d.version.as_deref()),
+            Some("1.40")
+        );
+        // The pin must not leak into the package's own dependency set.
+        assert!(!m.deps.contains_key("tokio"));
+    }
+
+    #[test]
+    fn table_field_requires_a_field_boundary() {
+        // `path` occurs inside the git URL and inside `default-path`, but
+        // neither starts a field, so neither may be read as `path =`.
+        let m = parse_manifest(
+            r#"
+[dependencies]
+a = { git = "https://example.com/path", default-path = "x", version = "2" }
+"#,
+        );
+        let a = m.deps.get("a").expect("dep a");
+        assert_eq!(a.path, None);
+        assert_eq!(a.version.as_deref(), Some("2"));
+        assert_eq!(a.git.as_deref(), Some("https://example.com/path"));
+    }
+
+    #[test]
+    fn non_dependency_tables_are_ignored() {
+        let m = parse_manifest(
+            r#"
+[package]
+name = "app"
+version = "0.1.0"
+
+[[bin]]
+name = "app"
+path = "src/main.rs"
+
+[profile.release]
+version = "not-a-dep"
+
+[features]
+default = []
+"#,
+        );
+        assert_eq!(m.package_name.as_deref(), Some("app"));
+        assert_eq!(m.package_version.as_deref(), Some("0.1.0"));
+        assert!(m.deps.is_empty(), "found stray deps: {:?}", m.deps.keys());
     }
 
     #[test]
@@ -312,11 +576,15 @@ serde = "1"
 "#,
         );
         assert_eq!(
-            m.workspace_deps.get("tokio").and_then(|d| d.version.as_deref()),
+            m.workspace_deps
+                .get("tokio")
+                .and_then(|d| d.version.as_deref()),
             Some("1")
         );
         assert_eq!(
-            m.workspace_deps.get("serde").and_then(|d| d.version.as_deref()),
+            m.workspace_deps
+                .get("serde")
+                .and_then(|d| d.version.as_deref()),
             Some("1")
         );
     }
