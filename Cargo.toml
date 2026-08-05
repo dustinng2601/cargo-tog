@@ -2,7 +2,9 @@
 name = "cargo-tog"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+# Floor is set by the clap 4.6 family (clap/clap_builder/clap_derive/clap_lex),
+# which all declare rust-version = "1.85". Verified by the `msrv` CI job.
+rust-version = "1.85"
 description = "Enterprise Cargo build-cache coordination for monorepos and polyrepos (cross-OS)"
 license = "MIT"
 repository = "https://github.com/sd2ek/cargo-tog"
