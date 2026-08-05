@@ -55,8 +55,10 @@ impl CacheMode {
         if !bucket.trim().is_empty() {
             return Self::Remote;
         }
-        // Heuristic: GitHub Actions sets these.
-        if env::var_os("GITHUB_ACTIONS").is_some() || env::var_os("CI").is_some() {
+        // Only GitHub Actions provides the GitHub object backend. Other CI
+        // systems also set `CI`, and picking `github` there would enable a
+        // cache service that does not exist; disk caching works everywhere.
+        if env::var_os("GITHUB_ACTIONS").is_some() {
             return Self::Github;
         }
         Self::Local
@@ -108,7 +110,10 @@ mod tests {
     #[test]
     fn parse_aliases() {
         assert_eq!(CacheMode::parse("gha"), Some(CacheMode::Github));
-        assert_eq!(CacheMode::parse("registry-only"), Some(CacheMode::RegistryOnly));
+        assert_eq!(
+            CacheMode::parse("registry-only"),
+            Some(CacheMode::RegistryOnly)
+        );
         assert_eq!(CacheMode::parse("auto"), None);
     }
 }

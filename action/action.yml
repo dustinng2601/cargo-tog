@@ -62,7 +62,7 @@ runs:
         case "$raw" in
           auto|"")
             if [ -n "$bucket" ]; then mode=remote
-            elif [ "${GITHUB_ACTIONS:-}" = "true" ] || [ -n "${CI:-}" ]; then mode=github
+            elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then mode=github
             else mode=local
             fi
             ;;
