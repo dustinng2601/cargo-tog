@@ -67,7 +67,7 @@ Disable with `--no-lock`.
 | Flag | Meaning |
 |------|---------|
 | `--json` | Full machine report |
-| `--lock` / `--no-lock` | Lock comparison (default on if both locks exist) |
+| `--no-lock` | Skip lock comparison (otherwise on when both locks exist) |
 | `--ignore a,b` | Skip crates |
 | `--include-path` | Don’t ignore path deps |
 | `--show-ok` | List matching crates |

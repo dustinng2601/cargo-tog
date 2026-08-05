@@ -11,6 +11,9 @@ repository = "https://github.com/sd2ek/cargo-tog"
 readme = "README.md"
 keywords = ["cargo", "cache", "ci", "monorepo", "rustc"]
 categories = ["command-line-utilities", "development-tools"]
+# Two bins, so `cargo run` needs to be told which one is the CLI. Without this
+# every `cargo run -- <cmd>` fails, including the package.json scripts.
+default-run = "cargo-tog"
 
 [[bin]]
 name = "cargo-tog"
