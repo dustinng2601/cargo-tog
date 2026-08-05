@@ -1,42 +1,43 @@
+use cargo_tog::mode::CacheMode;
+
 pub fn run() {
+    let mode = CacheMode::resolve();
     println!(
-        r#"# cargo-tog production cache plan (cross-OS)
+        r#"# cargo-tog cache plan
 #
-# SHARE ACROSS OS
-#   • CARGO_HOME registry + git downloads (same crate bytes everywhere)
+# RESOLVED MODE: {mode} — {desc}
+# Outside dependencies: {deps}
 #
-# SHARE ONLY WITHIN A TARGET TRIPLE (not across OS)
-#   • Compiler objects via CARGO_TOG_BUCKET
-#     e.g. x86_64-unknown-linux-gnu  ≠  aarch64-apple-darwin  ≠  x86_64-pc-windows-msvc
-#   • One bucket is OK — the engine partitions by compile identity / triple
+# ── Modes (bucket is optional) ─────────────────────────────────────────
+#   github         Quick CI. No bucket. Uses GitHub's cache service only.
+#   local          Disk only (CARGO_TOG_CACHE_DIR). No cloud.
+#   registry-only  crates.io/git downloads only. No object engine.
+#   remote         Multi-repo objects via CARGO_TOG_BUCKET (upgrade path).
+#   off            Plain Cargo.
+#   auto           bucket? → remote; else GITHUB_ACTIONS? → github; else local
 #
-# DO NOT SHARE
-#   • target/ across workspaces or across OS
-#   • full target/ in GitHub Actions cache
+#   export CARGO_TOG_MODE=github     # or pass Action input mode: github
+#   docs/MODES.md
 #
-# CI MATRIX KEYS (required for registry cache correctness)
-#   key: test-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}
-#   run: cargo-tog host-key   # prints this host's fragments
+# ── What to share ──────────────────────────────────────────────────────
+#   YES  registry downloads (all OS)
+#   YES  compiler objects within one target triple (mode=github|local|remote)
+#   NO   objects across linux/darwin/windows
+#   NO   target/ across workspaces
 #
-# CI DEFAULTS
-#   CARGO_INCREMENTAL=0  CARGO_PROFILE_DEV_DEBUG=0  cache-targets=false
-#   RUSTC_WRAPPER=cargo-tog-rustc   # real binary on all OSes
-#   secrets: CARGO_TOG_BUCKET, CARGO_TOG_ENDPOINT, CARGO_TOG_REGION,
-#            CARGO_TOG_ACCESS_KEY_ID, CARGO_TOG_SECRET_ACCESS_KEY
+# ── Quick start (no bucket) ────────────────────────────────────────────
+#   CI:     uses: org/cargo-tog/action@main
+#           with: {{ mode: github, key: test-${{{{ runner.os }}}}-${{{{ runner.arch }}}} }}
+#   Laptop: export RUSTC_WRAPPER=cargo-tog-rustc
+#           # mode defaults to local
 #
-# LOCAL (all OSes)
-#   cargo install --path .     # installs cargo-tog + cargo-tog-rustc
-#   set RUSTC_WRAPPER=cargo-tog-rustc
-#   # cache dir defaults:
-#   #   macOS:   ~/Library/Caches/cargo-tog
-#   #   Linux:   $XDG_CACHE_HOME/cargo-tog or ~/.cache/cargo-tog
-#   #   Windows: %LOCALAPPDATA%\\cargo-tog
+# ── When you later want multi-repo ─────────────────────────────────────
+#   Set CARGO_TOG_BUCKET + keys (or mode: remote). Not required on day one.
 #
-# NOT REQUIRED FOR CACHE
-#   source sync (docs/SYNC.md — advanced only)
-#
-# SEE ALSO
-#   docs/CROSS_OS.md  docs/PRODUCTION.md  docs/RESEARCH.md
-"#
+# SEE docs/MODES.md  docs/CROSS_OS.md  docs/PRODUCTION.md
+"#,
+        mode = mode.as_str(),
+        desc = mode.description(),
+        deps = mode.outside_dependencies(),
     );
 }

@@ -2,6 +2,12 @@
 
 ## 0.1.0
 
+### Cache modes (no bucket required)
+
+- `github` | `local` | `registry-only` | `remote` | `off` (+ `auto`)
+- Action input `mode:` and env `CARGO_TOG_MODE`
+- docs/MODES.md — quick CI without R2/S3
+
 ### Cross-OS
 
 - Native **`cargo-tog-rustc`** for macOS / Linux / Windows (not bash)

@@ -2,6 +2,7 @@
 
 pub mod cargo_toml;
 pub mod engine;
+pub mod mode;
 pub mod platform;
 
 // Command modules stay binary-only; paths re-export platform helpers for cmds.

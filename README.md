@@ -9,6 +9,32 @@ Optional:  inventory, dep-drift, lock fingerprints, host-key
 Advanced:  partial file mirrors (not required for cache)
 ```
 
+## Cache modes (bucket is optional)
+
+| Mode | Outside deps | When |
+|------|--------------|------|
+| **`github`** | GitHub only | **Default quick CI** — no R2/S3 |
+| **`local`** | Disk only | Laptop / persistent runner |
+| **`registry-only`** | None | Downloads only, no object engine |
+| **`remote`** | Bucket + keys | Multi-repo object reuse later |
+| **`off`** | None | Clean builds |
+
+```yaml
+# Day-one CI — zero cloud account
+- uses: your-org/cargo-tog/action@main
+  with:
+    mode: github   # or omit; auto selects github on Actions
+    key: test-${{ runner.os }}-${{ runner.arch }}
+```
+
+```bash
+export CARGO_TOG_MODE=local          # laptop default when not in CI
+# export CARGO_TOG_MODE=registry-only
+# export CARGO_TOG_MODE=remote       # needs CARGO_TOG_BUCKET
+```
+
+Full guide: **[docs/MODES.md](docs/MODES.md)**
+
 ## Cross-OS in one screen
 
 | Layer | Share across macOS / Linux / Windows? |
@@ -16,7 +42,7 @@ Advanced:  partial file mirrors (not required for cache)
 | crates.io / git downloads | **Yes** |
 | Compiler objects | **No — per target triple only** |
 | `target/` | **No** |
-| One remote `CARGO_TOG_BUCKET` | **Yes** (engine partitions by triple) |
+| One remote `CARGO_TOG_BUCKET` | Optional upgrade; partitions by triple |
 
 Deep dive: **[docs/CROSS_OS.md](docs/CROSS_OS.md)** · Production: **[docs/PRODUCTION.md](docs/PRODUCTION.md)** · Research: **[docs/RESEARCH.md](docs/RESEARCH.md)**
 
@@ -95,8 +121,8 @@ jobs:
       - run: cargo nextest run --workspace
 ```
 
-Empty bucket secrets → GitHub-hosted objects (still fine per OS).  
-Set org secrets once → multi-**repo** reuse **within** each triple.
+**No bucket?** Use `mode: github` (or auto on GHA).  
+**Bucket later?** Same Action + `CARGO_TOG_*` secrets → multi-repo objects per triple.
 
 ## Public contract (`CARGO_TOG_*`)
 

@@ -4,26 +4,27 @@ Cross-OS architecture: [CROSS_OS.md](CROSS_OS.md).
 
 ## Readiness checklist
 
-### Phase 0 — Single repo, GitHub-hosted (day one)
+### Phase 0 — Quick setup, **no bucket** (day one)
 
 - [ ] Install [Action](../action/action.yml) (or vendor under `.github/actions/cargo-tog`)
-- [ ] `compiler-cache: true`, `registry-cache: true`, `cache-targets: false`
-- [ ] `CARGO_INCREMENTAL=0`, slim debuginfo in CI
-- [ ] Pin Rust toolchain (`rust-toolchain.toml` or action input)
-- [ ] `cargo test` / `cargo nextest` both work unchanged
-- [ ] No remote secrets required
+- [ ] `mode: github` (or `auto` on GitHub Actions) — **zero cloud account**
+- [ ] Registry key includes OS/arch: `test-${{ runner.os }}-${{ runner.arch }}`
+- [ ] Pin Rust toolchain
+- [ ] `cargo test` / `cargo nextest` work unchanged
+- [ ] Laptop: `mode=local` (auto when not in CI) + `RUSTC_WRAPPER=cargo-tog-rustc`
+- [ ] Optional minimal: `mode: registry-only` if you refuse an object-cache engine
 
-### Phase 1 — Multi-repo / multi-OS object reuse
+See [MODES.md](MODES.md).
 
-- [ ] S3-compatible bucket (R2/S3/MinIO) in the **same region** as CI runners
-- [ ] Org secrets: `CARGO_TOG_BUCKET`, `CARGO_TOG_ENDPOINT`, `CARGO_TOG_REGION`,
-      `CARGO_TOG_ACCESS_KEY_ID`, `CARGO_TOG_SECRET_ACCESS_KEY`
-- [ ] IAM: least privilege object R/W on that bucket only
-- [ ] All Rust repos inherit the same org secrets
-- [ ] CI matrix covers ubuntu + macos + windows with keys:
-      `test-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}`
-- [ ] Confirm hit rate after 2–3 warm builds **per OS** (`cargo-tog doctor`)
-- [ ] Expect **no** object sharing across linux/darwin/windows triples (by design)
+### Phase 1 — Optional: multi-repo remote objects (bucket)
+
+Only when GitHub-hosted cache is not enough (evictions, multi-repo, durable store).
+
+- [ ] S3-compatible bucket (R2/S3/MinIO) near CI runners
+- [ ] Org secrets `CARGO_TOG_BUCKET` / `ENDPOINT` / `REGION` / keys
+- [ ] `mode: remote` or auto with bucket set
+- [ ] Matrix keys: `test-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}`
+- [ ] Warm builds **per OS**; no object sharing across triples (by design)
 
 ### Phase 2 — Hardening
 
