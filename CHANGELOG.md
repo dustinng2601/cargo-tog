@@ -4,25 +4,42 @@
 
 ### Performance
 
-Tree commands read every manifest one file at a time, so cost grew linearly with
-repository size — the case cargo-tog exists to serve. Reading and parsing is
-per-file and independent, so it now runs across the available cores, and
-`dep-drift` scans its two trees side by side instead of back to back. Measured on
-two synthetic 3000-crate monorepos, 8 cores, best of 3:
+Tree commands walked directories and read manifests one file at a time, so cost
+grew linearly with repository size — the case cargo-tog exists to serve. All
+three phases now use the available cores: the directory walk goes breadth-first
+only until it has enough independent subtrees to keep every core busy and then
+splits, manifests are read and parsed in parallel, lockfiles are hashed in
+parallel, and `dep-drift` scans its two trees side by side instead of back to
+back. Measured on 8 cores, best of 3+:
 
 | Command | Before | After | |
 |---------|-------:|------:|-|
-| `dep-drift` (2 × 3000 crates) | 967 ms | 208 ms | 4.6× |
-| `dep-drift --json` | 1060 ms | 211 ms | 5.0× |
-| `inventory` (3000 crates) | 574 ms | 149 ms | 3.9× |
-| `lock-fingerprint` (200 × 472 KB locks) | 242 ms | 79 ms | 3.1× |
+| `dep-drift` (2 × 3000 crates) | 967 ms | 187 ms | 5.2× |
+| `dep-drift --json` | 1060 ms | 193 ms | 5.5× |
+| `inventory` (3000 crates) | 574 ms | 109 ms | 5.3× |
+| `lock-fingerprint` (3000-dir tree) | 143 ms | 83 ms | 1.7× |
+| `lock-fingerprint` (200 × 472 KB locks) | 242 ms | 82 ms | 3.0× |
 
-Output is byte-identical to the serial implementation — verified over 6.5k lines
-of report across all four commands. Ordering is explicitly preserved: results are
-reassembled in input order, never in completion order, because callers zip
-manifests back against their paths and a report that reordered between runs on
-one tree would not be a report. Trees below 64 manifests keep the serial path,
-so small repositories pay nothing for thread setup.
+Sharding the walk on the top level alone would have achieved nothing: the usual
+monorepo shape puts every crate under a single `crates/`, which is one shard.
+Hence the breadth-first descent to a wide enough frontier before splitting.
+
+Output is byte-identical to the serial implementation, verified end to end after
+every step — over 6.5k lines of report across all four commands, plus 200
+lockfile fingerprints, and spot-checked against `shasum -a 256`. Ordering is
+preserved by construction rather than by luck: walk results are sorted, and
+parallel reads are reassembled in input order, never completion order, because
+callers zip manifests back against their paths and a fingerprint list that
+reshuffled between runs would be useless as a cache key.
+
+Behaviour at the edges is unchanged and now covered by tests: a walk rooted at a
+pruned directory still yields nothing, symlinks are still not followed (so a
+symlink loop cannot hang the walk), and `lock-fingerprint` keeps its own narrower
+prune set — it has always descended into `dev_docs`, and since its output feeds
+CI cache keys, silently dropping one would silently change a key. Small trees
+keep the serial paths, so they pay nothing for thread setup.
+
+No new dependency: this is `std::thread::scope`.
 
 ### Changed
 

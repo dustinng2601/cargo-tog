@@ -345,23 +345,148 @@ pub fn resolve_package_version(parsed: &ParsedManifest, workspace_pkg_ver: Optio
     "?".into()
 }
 
+/// Directories a manifest walk never descends into.
+///
+/// `dev_docs` skips local scratch trees if present. Note that the lockfile walk
+/// deliberately keeps its own, narrower set — see `find_cargo_locks`.
+pub fn is_pruned(name: &str) -> bool {
+    matches!(name, "target" | "node_modules" | ".git" | "dev_docs")
+}
+
+/// Every `Cargo.toml` under `root`, sorted.
 pub fn find_cargo_tomls(root: &Path) -> Result<Vec<PathBuf>> {
+    find_files_named(root, "Cargo.toml", is_pruned)
+}
+
+/// Every `Cargo.lock` under `root`, sorted.
+///
+/// The prune set is narrower than `is_pruned` on purpose: `lock-fingerprint`
+/// has always descended into `dev_docs`, and these fingerprints feed CI cache
+/// keys, so quietly dropping one would silently change a key.
+pub fn find_cargo_locks(root: &Path) -> Result<Vec<PathBuf>> {
+    find_files_named(root, "Cargo.lock", |name| {
+        matches!(name, "target" | "node_modules" | ".git")
+    })
+}
+
+/// Every file called `filename` under `root`, sorted.
+///
+/// A directory walk is inherently sequential, and on a large monorepo it is the
+/// single slowest step left. So walk breadth-first only until there are enough
+/// independent subtrees to keep every core busy, then walk those in parallel.
+/// Sharding on the top level alone would not do: the usual monorepo shape puts
+/// every crate under one `crates/`, which is a single shard and no faster.
+///
+/// The result is sorted, so it does not depend on which thread finished first.
+pub fn find_files_named(
+    root: &Path,
+    filename: &str,
+    prune: fn(&str) -> bool,
+) -> Result<Vec<PathBuf>> {
+    // A walk rooted at a pruned directory yields nothing — matching the
+    // filter that used to be applied to the walk's own root entry.
+    if root
+        .file_name()
+        .is_some_and(|n| prune(&n.to_string_lossy()))
+    {
+        return Ok(Vec::new());
+    }
+
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+
     let mut out = Vec::new();
-    for entry in WalkDir::new(root)
+    let mut frontier = vec![root.to_path_buf()];
+
+    if workers > 1 {
+        // Stop splitting once there is enough work to go round; deeper
+        // breadth-first scanning is itself serial and would eat the win.
+        let want = workers * 4;
+        while !frontier.is_empty() && frontier.len() < want {
+            let mut next = Vec::new();
+            for dir in &frontier {
+                read_children(dir, filename, prune, &mut out, &mut next);
+            }
+            frontier = next;
+        }
+    }
+
+    if workers > 1 && frontier.len() > 1 {
+        let chunk = frontier.len().div_ceil(workers);
+        std::thread::scope(|scope| -> Result<()> {
+            let handles: Vec<_> = frontier
+                .chunks(chunk)
+                .map(|slice| {
+                    scope.spawn(move || {
+                        let mut acc = Vec::new();
+                        for dir in slice {
+                            walk_subtree(dir, filename, prune, &mut acc);
+                        }
+                        acc
+                    })
+                })
+                .collect();
+            for handle in handles {
+                out.extend(
+                    handle
+                        .join()
+                        .map_err(|_| anyhow!("directory walker thread panicked"))?,
+                );
+            }
+            Ok(())
+        })?;
+    } else {
+        for dir in &frontier {
+            walk_subtree(dir, filename, prune, &mut out);
+        }
+    }
+
+    out.sort();
+    Ok(out)
+}
+
+/// One directory level: manifests directly inside, and subdirectories to visit.
+///
+/// `file_type` here does not follow symlinks, so a symlinked directory is not
+/// descended and a symlinked `Cargo.toml` is not collected — the same choice
+/// `WalkDir` makes by default, and what keeps a symlink loop from hanging.
+fn read_children(
+    dir: &Path,
+    filename: &str,
+    prune: fn(&str) -> bool,
+    found: &mut Vec<PathBuf>,
+    subdirs: &mut Vec<PathBuf>,
+) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return; // unreadable directories are skipped, as before
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            if !prune(&name) {
+                subdirs.push(entry.path());
+            }
+        } else if file_type.is_file() && name == filename {
+            found.push(entry.path());
+        }
+    }
+}
+
+fn walk_subtree(dir: &Path, filename: &str, prune: fn(&str) -> bool, out: &mut Vec<PathBuf>) {
+    for entry in WalkDir::new(dir)
         .into_iter()
-        .filter_entry(|e| {
-            // `dev_docs` skips local scratch trees if present.
-            let name = e.file_name().to_string_lossy();
-            name != "target" && name != "node_modules" && name != ".git" && name != "dev_docs"
-        })
+        .filter_entry(|e| !prune(&e.file_name().to_string_lossy()))
         .filter_map(|e| e.ok())
     {
-        if entry.file_type().is_file() && entry.file_name() == "Cargo.toml" {
+        if entry.file_type().is_file() && entry.file_name() == filename {
             out.push(entry.path().to_path_buf());
         }
     }
-    out.sort();
-    Ok(out)
 }
 
 pub fn load_manifest(path: &Path) -> Result<ParsedManifest> {
@@ -619,6 +744,105 @@ default = []
         assert_eq!(m.package_name.as_deref(), Some("app"));
         assert_eq!(m.package_version.as_deref(), Some("0.1.0"));
         assert!(m.deps.is_empty(), "found stray deps: {:?}", m.deps.keys());
+    }
+
+    /// Reference walk: the straightforward single-threaded version, kept to
+    /// hold the parallel one to account on whatever tree a test builds.
+    fn serial_find(root: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for entry in WalkDir::new(root)
+            .into_iter()
+            .filter_entry(|e| !is_pruned(&e.file_name().to_string_lossy()))
+            .filter_map(|e| e.ok())
+        {
+            if entry.file_type().is_file() && entry.file_name() == "Cargo.toml" {
+                out.push(entry.path().to_path_buf());
+            }
+        }
+        out.sort();
+        out
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("cargo-tog-{tag}-{stamp}"));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn parallel_walk_matches_the_serial_walk() {
+        let dir = scratch("walk");
+        // Wide enough to pass the frontier threshold on any core count, and
+        // deep enough that the split happens below the top level — the shape a
+        // real monorepo has, where everything hangs off one `crates/`.
+        for i in 0..200 {
+            let crate_dir = dir.join("crates").join(format!("c{i:03}"));
+            fs::create_dir_all(crate_dir.join("src")).unwrap();
+            fs::write(
+                crate_dir.join("Cargo.toml"),
+                format!("[package]\nname = \"c{i:03}\"\nversion = \"0.1.0\"\n"),
+            )
+            .unwrap();
+            // Noise that must never be collected.
+            for skip in ["target", "node_modules", ".git", "dev_docs"] {
+                let junk = crate_dir.join(skip);
+                fs::create_dir_all(&junk).unwrap();
+                fs::write(junk.join("Cargo.toml"), "[package]\nname = \"junk\"\n").unwrap();
+            }
+        }
+        fs::write(dir.join("Cargo.toml"), "[workspace]\n").unwrap();
+        fs::create_dir_all(dir.join("target/deep")).unwrap();
+        fs::write(dir.join("target/deep/Cargo.toml"), "[package]\n").unwrap();
+
+        let found = find_cargo_tomls(&dir).unwrap();
+        assert_eq!(found, serial_find(&dir), "parallel walk diverged");
+        assert_eq!(found.len(), 201, "expected 200 crates + workspace root");
+        assert!(
+            !found.iter().any(|p| p.components().any(|c| {
+                matches!(
+                    c.as_os_str().to_string_lossy().as_ref(),
+                    "target" | "node_modules" | ".git" | "dev_docs"
+                )
+            })),
+            "walk descended into a pruned directory"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_root_that_is_itself_pruned_yields_nothing() {
+        // `--root ./target` found nothing before, because the prune filter also
+        // applied to the walk's own root. Splitting the walk must not quietly
+        // start returning results here.
+        let dir = scratch("pruned-root").join("target");
+        fs::create_dir_all(dir.join("app")).unwrap();
+        fs::write(dir.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        fs::write(dir.join("app/Cargo.toml"), "[package]\nname = \"y\"\n").unwrap();
+
+        assert!(find_cargo_tomls(&dir).unwrap().is_empty());
+        assert_eq!(find_cargo_tomls(&dir).unwrap(), serial_find(&dir));
+        let _ = fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn a_symlink_loop_does_not_hang_the_walk() {
+        let dir = scratch("symlink");
+        fs::create_dir_all(dir.join("real")).unwrap();
+        fs::write(dir.join("real/Cargo.toml"), "[package]\nname = \"real\"\n").unwrap();
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&dir, dir.join("real/loop")).is_ok();
+        #[cfg(not(unix))]
+        let linked = false;
+
+        let found = find_cargo_tomls(&dir).unwrap();
+        assert_eq!(found.len(), 1, "symlink was followed: {found:?}");
+        assert_eq!(found, serial_find(&dir));
+        let _ = linked;
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
