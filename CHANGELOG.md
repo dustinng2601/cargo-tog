@@ -2,6 +2,33 @@
 
 ## 0.1.0 (unreleased)
 
+### Performance
+
+Tree commands read every manifest one file at a time, so cost grew linearly with
+repository size — the case cargo-tog exists to serve. Reading and parsing is
+per-file and independent, so it now runs across the available cores, and
+`dep-drift` scans its two trees side by side instead of back to back. Measured on
+two synthetic 3000-crate monorepos, 8 cores, best of 3:
+
+| Command | Before | After | |
+|---------|-------:|------:|-|
+| `dep-drift` (2 × 3000 crates) | 967 ms | 208 ms | 4.6× |
+| `dep-drift --json` | 1060 ms | 211 ms | 5.0× |
+| `inventory` (3000 crates) | 574 ms | 149 ms | 3.9× |
+| `lock-fingerprint` (200 × 472 KB locks) | 242 ms | 79 ms | 3.1× |
+
+Output is byte-identical to the serial implementation — verified over 6.5k lines
+of report across all four commands. Ordering is explicitly preserved: results are
+reassembled in input order, never in completion order, because callers zip
+manifests back against their paths and a report that reordered between runs on
+one tree would not be a report. Trees below 64 manifests keep the serial path,
+so small repositories pay nothing for thread setup.
+
+### Changed
+
+- `actions/checkout` v4 → v5. v4 targets Node 20, which GitHub already forces
+  onto Node 24 with a deprecation warning on every job.
+
 ### Fixed
 
 - **`cargo-tog-rustc` no longer breaks builds when no object engine is installed.**

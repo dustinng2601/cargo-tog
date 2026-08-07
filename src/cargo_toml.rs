@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use walkdir::WalkDir;
 
 #[derive(Debug, Default, Clone)]
@@ -369,6 +369,50 @@ pub fn load_manifest(path: &Path) -> Result<ParsedManifest> {
     Ok(parse_manifest(&text))
 }
 
+/// Below this many manifests, threads cost more than the read they save.
+const PARALLEL_MIN: usize = 64;
+
+/// Read and parse every manifest, in the order given.
+///
+/// Reading and parsing manifests dominates every tree-walking command, and each
+/// file is independent, so hand each core a contiguous slice. Output order
+/// matches `paths` regardless of thread scheduling — drift reports key off it,
+/// and a report that reorders between runs on one tree is not a report.
+pub fn load_manifests(paths: &[PathBuf]) -> Result<Vec<ParsedManifest>> {
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(paths.len());
+
+    if workers <= 1 || paths.len() < PARALLEL_MIN {
+        return paths.iter().map(|p| load_manifest(p)).collect();
+    }
+
+    let chunk = paths.len().div_ceil(workers);
+    let mut out = Vec::with_capacity(paths.len());
+    std::thread::scope(|scope| -> Result<()> {
+        let handles: Vec<_> = paths
+            .chunks(chunk)
+            .map(|slice| {
+                scope.spawn(move || {
+                    slice
+                        .iter()
+                        .map(|p| load_manifest(p))
+                        .collect::<Result<Vec<_>>>()
+                })
+            })
+            .collect();
+        for handle in handles {
+            let parsed = handle
+                .join()
+                .map_err(|_| anyhow!("manifest reader thread panicked"))??;
+            out.extend(parsed);
+        }
+        Ok(())
+    })?;
+    Ok(out)
+}
+
 fn string_assign(line: &str, key: &str) -> Option<String> {
     let (left, right) = line.split_once('=')?;
     if left.trim() != key {
@@ -575,6 +619,74 @@ default = []
         assert_eq!(m.package_name.as_deref(), Some("app"));
         assert_eq!(m.package_version.as_deref(), Some("0.1.0"));
         assert!(m.deps.is_empty(), "found stray deps: {:?}", m.deps.keys());
+    }
+
+    #[test]
+    fn parallel_loading_preserves_input_order() {
+        // Well past PARALLEL_MIN, so this really does cross threads. Callers zip
+        // the result back against the path list, so any reordering would staple
+        // each manifest onto a neighbour's path.
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("cargo-tog-order-{stamp}"));
+        let _ = fs::remove_dir_all(&dir);
+
+        let count = PARALLEL_MIN * 5;
+        let mut paths = Vec::with_capacity(count);
+        for i in 0..count {
+            let crate_dir = dir.join(format!("c{i:04}"));
+            fs::create_dir_all(&crate_dir).unwrap();
+            let path = crate_dir.join("Cargo.toml");
+            fs::write(
+                &path,
+                format!("[package]\nname = \"c{i:04}\"\nversion = \"0.1.0\"\n"),
+            )
+            .unwrap();
+            paths.push(path);
+        }
+        paths.sort();
+
+        let loaded = load_manifests(&paths).unwrap();
+        assert_eq!(loaded.len(), paths.len());
+        let names: Vec<&str> = loaded
+            .iter()
+            .map(|m| m.package_name.as_deref().unwrap_or("?"))
+            .collect();
+        let expected: Vec<String> = (0..count).map(|i| format!("c{i:04}")).collect();
+        assert_eq!(names, expected, "parallel load reordered manifests");
+
+        // And it must agree with reading them one at a time.
+        let serial: Vec<_> = paths.iter().map(|p| load_manifest(p).unwrap()).collect();
+        assert_eq!(
+            names,
+            serial
+                .iter()
+                .map(|m| m.package_name.as_deref().unwrap_or("?"))
+                .collect::<Vec<_>>()
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn loading_reports_the_file_that_failed() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("cargo-tog-missing-{stamp}"));
+        fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("Cargo.toml");
+        fs::write(&good, "[package]\nname = \"ok\"\nversion = \"0.1.0\"\n").unwrap();
+        let missing = dir.join("gone/Cargo.toml");
+
+        let err = load_manifests(&[good, missing.clone()]).unwrap_err();
+        assert!(
+            err.to_string().contains("gone"),
+            "error lost the offending path: {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
