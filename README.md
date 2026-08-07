@@ -21,7 +21,7 @@ Advanced:  partial file mirrors (not required for cache)
 
 ```yaml
 # Day-one CI — zero cloud account
-- uses: your-org/cargo-tog/action@main
+- uses: dustinng2601/cargo-tog/action@main
   with:
     mode: github   # or omit; auto selects github on Actions
     key: test-${{ runner.os }}-${{ runner.arch }}
@@ -114,7 +114,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: your-org/cargo-tog/action@main
+      - uses: dustinng2601/cargo-tog/action@main
         with:
           key: test-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}
           install-nextest: "true"

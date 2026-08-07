@@ -270,4 +270,58 @@ clap = "4"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn a_headerless_workspace_root_owns_its_members() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("cargo-tog-headerless-{stamp}"));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // repo-a is a workspace root spelled *only* as `[workspace.dependencies]`,
+        // and it pins no serde. repo-b, a sibling, pins serde 2.0.
+        std::fs::create_dir_all(dir.join("repo-a/app")).unwrap();
+        std::fs::write(
+            dir.join("repo-a/Cargo.toml"),
+            "[workspace.dependencies]\nanyhow = { version = \"1\" }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("repo-a/app/Cargo.toml"),
+            "[package]\nname = \"a-app\"\nversion = \"0.1.0\"\n\n\
+             [dependencies]\nserde = { workspace = true }\n",
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(dir.join("repo-b/app")).unwrap();
+        std::fs::write(
+            dir.join("repo-b/Cargo.toml"),
+            "[workspace]\nmembers = [\"app\"]\n\n\
+             [workspace.dependencies]\nserde = { version = \"2.0\" }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("repo-b/app/Cargo.toml"),
+            "[package]\nname = \"b-app\"\nversion = \"0.1.0\"\n\n\
+             [dependencies]\nserde = { workspace = true }\n",
+        )
+        .unwrap();
+
+        let g = DepGraph::collect(&dir).unwrap();
+        let keys = g.drift_keys("serde");
+
+        // repo-a pins no serde, so its member is genuinely unresolved. Missing
+        // the headerless root made it borrow repo-b's 2.0 and report clean.
+        assert!(
+            keys.contains("workspace?"),
+            "member of a headerless root borrowed a sibling's pin: {keys:?}"
+        );
+        assert!(
+            keys.contains("ver:2.0"),
+            "repo-b lost its own pin: {keys:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

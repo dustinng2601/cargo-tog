@@ -26,7 +26,7 @@ pub fn run() {
 #   NO   target/ across workspaces
 #
 # ── Quick start (no bucket) ────────────────────────────────────────────
-#   CI:     uses: org/cargo-tog/action@main
+#   CI:     uses: dustinng2601/cargo-tog/action@main
 #           with: {{ mode: github, key: test-${{{{ runner.os }}}}-${{{{ runner.arch }}}} }}
 #   Laptop: export RUSTC_WRAPPER=cargo-tog-rustc
 #           # mode defaults to local

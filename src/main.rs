@@ -70,6 +70,6 @@ fn main() -> Result<()> {
             config,
             check,
             apply,
-        } => commands::sync::run(&config, check || !apply, apply),
+        } => commands::sync::run(&config, check, apply),
     }
 }
