@@ -123,3 +123,26 @@ jobs:
         run: |
           cargo build -q --locked
           cargo-tog doctor
+
+  # Rule-based analysis, published to SonarQube Cloud. Not the CLI's `analyze`,
+  # which routes through server-side agentic analysis that this organisation
+  # answers 403 for; the scanner needs no such tier.
+  #
+  # Skipped when the token is absent, as it is for a pull request from a fork:
+  # one cannot read repository secrets, and failing it for that would say
+  # nothing about the change.
+  sonar:
+    name: Sonar
+    runs-on: ubuntu-22.04
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Findings are attributed to commits; a shallow clone leaves Sonar
+          # guessing at blame and at what counts as new.
+          fetch-depth: 0
+
+      - name: Scan
+        if: env.SONAR_TOKEN != ''
+        uses: SonarSource/sonarqube-scan-action@v6
