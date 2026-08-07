@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
 use cargo_tog::paths::{expand_user, resolve_relative_to};
@@ -16,7 +16,13 @@ struct Mirror {
     files: Vec<(String, String)>,
 }
 
+/// Compare (and optionally copy) the files each mirror lists.
+///
+/// With neither flag this reports drift without writing: `--apply` is the only
+/// path that touches the target tree, so the read-only reading is the safe one.
 pub fn run(config: &str, check: bool, apply: bool) -> Result<()> {
+    let check = check || !apply;
+
     println!("cargo-tog sync is advanced/optional (not part of core cache).\n");
 
     let config_path = if Path::new(config).is_absolute() {
@@ -102,9 +108,6 @@ pub fn run(config: &str, check: bool, apply: bool) -> Result<()> {
 
     if check && !apply && drifted > 0 {
         std::process::exit(1);
-    }
-    if !check && !apply {
-        bail!("pass --check or --apply");
     }
     Ok(())
 }

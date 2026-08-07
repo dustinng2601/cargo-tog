@@ -136,7 +136,7 @@ steps:
   - uses: dtolnay/rust-toolchain@stable
     with:
       targets: ${{ matrix.target }}
-  - uses: your-org/cargo-tog/action@main
+  - uses: dustinng2601/cargo-tog/action@main
     with:
       # Registry cache must be OS/arch/target scoped
       key: test-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}

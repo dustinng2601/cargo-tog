@@ -36,15 +36,15 @@ env:
 ## Enterprise pinning
 
 ```yaml
-- uses: your-org/cargo-tog/action@v0.1.0
+- uses: dustinng2601/cargo-tog/action@v0.1.0
 # or
-- uses: your-org/cargo-tog/action@<full-commit-sha>
+- uses: dustinng2601/cargo-tog/action@<full-commit-sha>
 ```
 
 ## nextest
 
 ```yaml
-- uses: your-org/cargo-tog/action@main
+- uses: dustinng2601/cargo-tog/action@main
   with:
     key: test-${{ runner.os }}-${{ runner.arch }}
     install-nextest: "true"

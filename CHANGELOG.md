@@ -36,6 +36,24 @@
   last. Pins now resolve against the workspace that owns the manifest.
 - `find_primary_lock` picked a nested `Cargo.lock` in unspecified directory
   order, so drift reports could differ between runs on the same tree.
+- **A workspace root spelled only as `[workspace.dependencies]` went
+  unrecognized.** TOML creates the `workspace` table for that header just as a
+  bare `[workspace]` does, but the manifest reader keyed off the bare header
+  alone, so such a root was never indexed. Its members then resolved
+  `workspace = true` against a *sibling* workspace's pins — the same crossover
+  fixed for headed roots — and a genuinely unpinned dependency was reported as
+  clean instead of unresolved.
+- **Every copy-paste CI snippet named a repository that does not exist.** The
+  README quick start, `docs/{GITHUB_ACTIONS,MODES,CROSS_OS}.md`, all four
+  `examples/ci/*.yml`, and the `cache-plan` output shipped a `your-org/cargo-tog`
+  placeholder, so following the docs produced a workflow that fails to resolve
+  the Action. The README also contradicted itself, using the real repository in
+  its matrix example and the placeholder directly above it.
+- `Cargo.toml` published a `repository` URL under the crate author's former
+  account name.
+- `cargo-tog sync` with neither `--check` nor `--apply` reported drift but then
+  claimed to require a flag; the read-only default is now the documented
+  behavior rather than an unreachable error.
 
 ### Added
 

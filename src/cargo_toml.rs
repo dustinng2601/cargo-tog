@@ -80,7 +80,18 @@ pub fn parse_manifest(text: &str) -> ParsedManifest {
             let header = line[1..line.len() - 1].trim();
             section = classify_section(header);
             in_members = false;
-            if section == Section::Workspace {
+            // Any `[workspace…]` table marks a workspace root. TOML creates the
+            // `workspace` table for `[workspace.dependencies]` exactly as a bare
+            // `[workspace]` does, and Cargo reads pins from both — so keying off
+            // the bare header alone left such a root unindexed, and its members
+            // resolved `workspace = true` against a sibling workspace's pins.
+            if matches!(
+                section,
+                Section::Workspace
+                    | Section::WorkspacePackage
+                    | Section::WorkspaceDeps
+                    | Section::WorkspaceDepEntry(_)
+            ) {
                 out.is_workspace = true;
             }
             // A dependency table exists even if every line in it is a field we
@@ -564,6 +575,38 @@ default = []
         assert_eq!(m.package_name.as_deref(), Some("app"));
         assert_eq!(m.package_version.as_deref(), Some("0.1.0"));
         assert!(m.deps.is_empty(), "found stray deps: {:?}", m.deps.keys());
+    }
+
+    #[test]
+    fn a_workspace_dependencies_table_alone_marks_a_workspace_root() {
+        // No bare `[workspace]` header — TOML still creates the `workspace`
+        // table, and Cargo still reads these pins, so this manifest is a root.
+        let m = parse_manifest(
+            r#"
+[workspace.dependencies]
+serde = "1"
+"#,
+        );
+        assert!(
+            m.is_workspace,
+            "headerless workspace root went unrecognized"
+        );
+        assert!(m.workspace_deps.contains_key("serde"));
+    }
+
+    #[test]
+    fn a_plain_package_is_not_a_workspace_root() {
+        let m = parse_manifest(
+            r#"
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = { workspace = true }
+"#,
+        );
+        assert!(!m.is_workspace);
     }
 
     #[test]

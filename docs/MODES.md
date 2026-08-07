@@ -50,19 +50,19 @@ export CARGO_TOG_MODE=github    # or local | remote | registry-only | off
 
 ```yaml
 # Quick path — no secrets, no bucket
-- uses: your-org/cargo-tog/action@main
+- uses: dustinng2601/cargo-tog/action@main
   with:
     mode: github          # or omit: auto does this on GHA
     key: test-${{ runner.os }}-${{ runner.arch }}
 
 # Downloads only (no object engine install)
-- uses: your-org/cargo-tog/action@main
+- uses: dustinng2601/cargo-tog/action@main
   with:
     mode: registry-only
     key: test-${{ runner.os }}-${{ runner.arch }}
 
 # Multi-repo later (when you have a bucket)
-- uses: your-org/cargo-tog/action@main
+- uses: dustinng2601/cargo-tog/action@main
   with:
     mode: remote   # or auto + CARGO_TOG_BUCKET secret
 ```
