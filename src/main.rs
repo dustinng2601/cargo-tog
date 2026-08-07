@@ -51,7 +51,30 @@ enum Commands {
     },
 }
 
+/// Die quietly when the reader of our stdout goes away.
+///
+/// Rust ignores `SIGPIPE` at startup, so a closed pipe surfaces as an `EPIPE`
+/// write error and `println!` panics: `cargo-tog inventory | head` aborted with
+/// a Rust backtrace and exit 101. Under `bash -eo pipefail` — how GitHub
+/// Actions runs `shell: bash`, and how this repo's own CI pipes `cache-plan`
+/// into `head` — that fails the step. Restoring the default disposition is what
+/// every other Unix tool does, and it must happen before any output.
+#[cfg(unix)]
+fn quiet_on_closed_pipe() {
+    // SAFETY: called first thing in main, before any thread is spawned, and
+    // SIG_DFL is the disposition the process would have had without Rust's
+    // startup override.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+/// Windows has no `SIGPIPE`; behaviour there is unchanged.
+#[cfg(not(unix))]
+fn quiet_on_closed_pipe() {}
+
 fn main() -> Result<()> {
+    quiet_on_closed_pipe();
     let cli = Cli::parse();
     match cli.command {
         Commands::Doctor => commands::doctor::run(),

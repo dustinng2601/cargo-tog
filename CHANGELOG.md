@@ -48,6 +48,15 @@ No new dependency: this is `std::thread::scope`.
 
 ### Fixed
 
+- **Piping the CLI into a short reader aborted it.** Rust ignores `SIGPIPE`, so
+  a closed pipe surfaced as an `EPIPE` write error and `println!` panicked:
+  `cargo-tog inventory | head` died with a Rust backtrace and exit 101 whenever
+  the output outgrew the pipe buffer. Under `bash -eo pipefail` — how GitHub
+  Actions runs `shell: bash`, and how this repo's own CI pipes `cache-plan` into
+  `head` — that failed the step; it passed only because `cache-plan` is small
+  enough to fit the buffer. The default `SIGPIPE` disposition is now restored at
+  startup, so the tool exits quietly like every other Unix command. Windows has
+  no `SIGPIPE` and is unaffected.
 - **`cargo-tog-rustc` no longer breaks builds when no object engine is installed.**
   Cargo calls a wrapper as `wrapper <rustc> <args…>`; the fallback passed rustc's
   own path back to rustc, which read it as an input filename (`error: multiple
