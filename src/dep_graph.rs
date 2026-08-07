@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::cargo_toml::{find_cargo_tomls, load_manifest, DepSpec, ParsedManifest};
+use crate::cargo_toml::{find_cargo_tomls, load_manifests, DepSpec, ParsedManifest};
 
 /// How a dependency appears after resolving workspace pins in-tree.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -74,14 +74,13 @@ impl DepGraph {
         let paths = find_cargo_tomls(root)?;
         g.manifests = paths.len();
 
-        let mut loaded = Vec::new();
-        for p in &paths {
-            let m = load_manifest(p)?;
+        let manifests = load_manifests(&paths)?;
+        for m in &manifests {
             for (k, spec) in &m.workspace_deps {
                 g.workspace_pins.insert(k.clone(), spec.clone());
             }
-            loaded.push((p.clone(), m));
         }
+        let loaded: Vec<(PathBuf, ParsedManifest)> = paths.into_iter().zip(manifests).collect();
 
         // A tree can hold several independent workspaces (a polyrepo checkout
         // root). Resolve `workspace = true` against the pins of the workspace

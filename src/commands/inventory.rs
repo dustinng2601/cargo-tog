@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 
 use cargo_tog::cargo_toml::{
-    find_cargo_tomls, load_manifest, resolve_package_version, ParsedManifest,
+    find_cargo_tomls, load_manifests, resolve_package_version, ParsedManifest,
 };
 use cargo_tog::paths::resolve_path;
 
@@ -21,10 +21,9 @@ pub fn run(root: &str) -> Result<()> {
     let mut root_members = Vec::new();
     let mut packages: Vec<(String, String, String)> = Vec::new();
 
-    let parsed: Vec<(std::path::PathBuf, ParsedManifest)> = tomls
-        .iter()
-        .map(|p| load_manifest(p).map(|m| (p.clone(), m)))
-        .collect::<Result<Vec<_>>>()?;
+    let manifests = load_manifests(&tomls)?;
+    let parsed: Vec<(std::path::PathBuf, ParsedManifest)> =
+        tomls.into_iter().zip(manifests).collect();
 
     for (path, m) in &parsed {
         if let Some(v) = &m.workspace_package_version {

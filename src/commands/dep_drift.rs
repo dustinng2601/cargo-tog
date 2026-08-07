@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use clap::Args;
 use serde::Serialize;
 
@@ -112,20 +112,18 @@ pub fn run_args(args: DepDriftArgs) -> Result<()> {
     }
 
     let ignore: BTreeSet<String> = args.ignore.iter().cloned().collect();
-    let g_m = DepGraph::collect(&master)?;
-    let g_o = DepGraph::collect(&other)?;
-
     let compare_lock = !args.no_lock;
-    let lock_m = if compare_lock {
-        find_primary_lock(&master).and_then(|p| LockIndex::load(&p).ok())
-    } else {
-        None
-    };
-    let lock_o = if compare_lock {
-        find_primary_lock(&other).and_then(|p| LockIndex::load(&p).ok())
-    } else {
-        None
-    };
+
+    // The two trees are independent, and each one's directory walk is
+    // single-threaded, so scanning them side by side overlaps the two walks
+    // instead of paying for them back to back.
+    let (side_m, side_o) = std::thread::scope(|scope| {
+        let m = scope.spawn(|| scan_tree(&master, compare_lock));
+        let o = scope.spawn(|| scan_tree(&other, compare_lock));
+        (m.join(), o.join())
+    });
+    let (g_m, lock_m) = side_m.map_err(|_| anyhow!("scan of --master panicked"))??;
+    let (g_o, lock_o) = side_o.map_err(|_| anyhow!("scan of --other panicked"))??;
     let lock_compared = lock_m.is_some() && lock_o.is_some();
 
     let mut report = Report {
@@ -277,6 +275,16 @@ pub fn run_args(args: DepDriftArgs) -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Everything one side contributes: its manifests, and its lockfile if wanted.
+fn scan_tree(root: &std::path::Path, compare_lock: bool) -> Result<(DepGraph, Option<LockIndex>)> {
+    let graph = DepGraph::collect(root)?;
+    let lock = compare_lock
+        .then(|| find_primary_lock(root))
+        .flatten()
+        .and_then(|p| LockIndex::load(&p).ok());
+    Ok((graph, lock))
 }
 
 fn only_path(g: &DepGraph, name: &str) -> bool {
