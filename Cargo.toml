@@ -25,6 +25,8 @@ path = "src/bin/cargo_tog_rustc.rs"
 
 [dependencies]
 anyhow = "1"
+# Only to restore the default SIGPIPE disposition, which std cannot express.
+# Already in the tree transitively, so this costs no extra compilation.
 clap = { version = "4", features = ["derive", "env"] }
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }
@@ -32,6 +34,9 @@ serde_json = "1"
 sha2 = "0.10"
 walkdir = "2"
 which = "7"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [profile.release]
 lto = "thin"
