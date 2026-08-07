@@ -3,26 +3,13 @@ use std::io::Read;
 
 use anyhow::{anyhow, Result};
 use sha2::{Digest, Sha256};
-use walkdir::WalkDir;
 
+use cargo_tog::cargo_toml::find_cargo_locks;
 use cargo_tog::paths::resolve_path;
 
 pub fn run(root: &str) -> Result<()> {
     let root = resolve_path(root);
-    let mut locks = Vec::new();
-    for entry in WalkDir::new(&root)
-        .into_iter()
-        .filter_entry(|e| {
-            let n = e.file_name().to_string_lossy();
-            n != "target" && n != "node_modules" && n != ".git"
-        })
-        .filter_map(|e| e.ok())
-    {
-        if entry.file_type().is_file() && entry.file_name() == "Cargo.lock" {
-            locks.push(entry.path().to_path_buf());
-        }
-    }
-    locks.sort();
+    let locks = find_cargo_locks(&root)?;
 
     if locks.is_empty() {
         println!("no Cargo.lock under {}", root.display());
